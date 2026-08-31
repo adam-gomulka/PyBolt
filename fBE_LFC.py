@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import argparse
+import os
 import sys
+import traceback
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -78,8 +80,8 @@ def parse_args(argv=None):
                         help="Lepton type (e.g., muon, electron)")
     parser.add_argument("--ratio", type=float, required=True,
                         help="T_reh_to_mass_ratio: Ratio of Reheating T to Lepton mass")
-    parser.add_argument("--output", type=str, required=True,
-                        help="Name for the output file")
+    parser.add_argument("--output", type=str, default=None,
+                        help="Name for the combined output file (serial mode)")
     parser.add_argument("--f_min", type=float, default=1e7,
                         help="Minimum axion decay constant f_a in GeV (default: 1e7)")
     parser.add_argument("--f_max", type=float, default=1e9,
@@ -90,6 +92,21 @@ def parse_args(argv=None):
                         default=False,
                         help="Simplify the collision terms by setting f/f_eq=1 and "
                              "neglecting quantum corrections? (default=False)")
+    parser.add_argument("--parts-dir", type=str, default=None,
+                        help="Write one part file per f index into this directory "
+                             "instead of one combined output file")
+    parser.add_argument("--f-index-start", type=int, default=0,
+                        help="First f grid index this task solves (default: 0)")
+    parser.add_argument("--f-count", type=int, default=None,
+                        help="Number of f grid indices this task solves "
+                             "(default: all remaining)")
+    parser.add_argument("--nproc", type=int, default=1,
+                        help="Worker processes within this task (default: 1)")
+    parser.add_argument("--overwrite", action="store_true",
+                        help="Recompute indices whose part file already exists")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Skip the solver and emit a zero row of the correct "
+                             "width, to exercise the pipeline cheaply")
     return parser.parse_args(argv)
 
 
@@ -150,6 +167,121 @@ def run_serial(config, f_vals, output):
             handle.flush()
 
 
+def part_is_valid(path, expected_width):
+    """True if ``path`` already holds one usable row of the expected width."""
+    if not os.path.exists(path):
+        return False
+    try:
+        line = axion_grid.read_row(path)
+    except (OSError, ValueError):
+        return False
+    return axion_grid.row_width(line) == expected_width
+
+
+def process_index(index, f_a, parts_dir, config, overwrite=False, dry_run=False,
+                  solver=None):
+    """Solve one grid index into its part file.
+
+    Returns "skipped", "solved" or "failed".  A solver failure writes a .fail
+    marker and is reported, never raised -- the array task must survive it and
+    let the merge be the gate.
+    """
+    part_path = os.path.join(parts_dir, axion_grid.part_filename(index))
+    fail_path = os.path.join(parts_dir, axion_grid.fail_filename(index))
+    expected_width = 1 + len(config.q_lin)
+
+    if not overwrite and part_is_valid(part_path, expected_width):
+        return "skipped"
+
+    try:
+        if dry_run:
+            distribution = np.zeros(len(config.q_lin))
+        else:
+            distribution = (solver or solve_distribution)(f_a, config)
+        axion_grid.atomic_write_text(
+            part_path, axion_grid.format_row(f_a, distribution)
+        )
+    except Exception:
+        axion_grid.atomic_write_text(
+            fail_path,
+            "index = {}\nf_a = {:.5e}\n\n{}".format(
+                index, f_a, traceback.format_exc()
+            ),
+        )
+        print("index {} (f_a={:.5e}) failed, see {}".format(index, f_a, fail_path),
+              file=sys.stderr)
+        sys.stderr.flush()
+        return "failed"
+
+    # A retry that succeeds must clear the old marker, or the merge report lies.
+    if os.path.exists(fail_path):
+        os.remove(fail_path)
+    return "solved"
+
+
+def select_indices(f_vals, start, count):
+    """The grid indices this task is responsible for, clipped to the grid.
+
+    Clipping here is what lets the last array task need no special case when
+    f_num is not a multiple of the chunk size.
+    """
+    begin = min(start, len(f_vals))
+    stop = len(f_vals) if count is None else min(begin + count, len(f_vals))
+    return range(begin, stop)
+
+
+def build_meta(args, config):
+    """The run metadata written next to the part files."""
+    return {
+        "lepton": args.lepton.lower(),
+        "m_lepton": config.m_lepton,
+        "g_lepton": config.g_lepton,
+        "ratio": args.ratio,
+        "T_reh": config.T_reh,
+        "mDM": config.mDM,
+        "g_x": config.g_x,
+        "particle_type": PARTICLE_TYPE,
+        "simplify": bool(config.simplify),
+        "f_min": args.f_min,
+        "f_max": args.f_max,
+        "f_num": args.f_num,
+        "N_x": len(config.x_lin),
+        "x_start": float(config.x_lin[0]),
+        "x_fin": float(config.x_lin[-1]),
+        "x_spacing": "linear",
+        "N_q": len(config.q_lin),
+        "q_start": float(config.q_lin[0]),
+        "q_end": float(config.q_lin[-1]),
+        "q_spacing": "linear",
+        "solver_options": dict(config.solver_options),
+    }
+
+
+def run_parts(args, config, f_vals):
+    """Solve this task's slice into ``args.parts_dir``. Returns outcome counts."""
+    os.makedirs(args.parts_dir, exist_ok=True)
+    axion_grid.write_meta_if_absent(args.parts_dir, build_meta(args, config))
+
+    index_list = list(select_indices(f_vals, args.f_index_start, args.f_count))
+    if index_list:
+        print("task solving indices {}..{} of {}".format(
+            index_list[0], index_list[-1], args.f_num))
+    else:
+        print("task has no indices to solve (start {} is past the grid of {})".format(
+            args.f_index_start, args.f_num))
+
+    counts = {"solved": 0, "skipped": 0, "failed": 0}
+    for index in tqdm(index_list, desc="Solving fBE"):
+        outcome = process_index(
+            index, f_vals[index], args.parts_dir, config,
+            overwrite=args.overwrite, dry_run=args.dry_run,
+        )
+        counts[outcome] += 1
+
+    print("solved={solved} skipped={skipped} failed={failed}".format(**counts))
+    return counts
+
+
 def main(argv=None):
     args = parse_args(argv)
     config = build_config(args)
@@ -159,8 +291,17 @@ def main(argv=None):
     if config.T_reh < 1e-3:
         print("Warning: reheating temperature below 1 MeV is unreliable in this setup.")
 
+    if (args.parts_dir is None) == (args.output is None):
+        print("ERROR: give exactly one of --output (serial) or --parts-dir (parallel)",
+              file=sys.stderr)
+        return 2
+
     f_vals = axion_grid.f_grid(args.f_min, args.f_max, args.f_num)
-    run_serial(config, f_vals, args.output)
+
+    if args.parts_dir is not None:
+        run_parts(args, config, f_vals)
+    else:
+        run_serial(config, f_vals, args.output)
     return 0
 
 
