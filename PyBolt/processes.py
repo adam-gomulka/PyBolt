@@ -13,10 +13,11 @@ class Process(ABC):
     Base class for all the processes.
     """
     
-    def __init__(self, m1: float, g_1: float, coupling: float, **kwargs):
+    def __init__(self, m1: float, g_1: float, coupling: float, simplify: bool = False, **kwargs):
         self._m1 = m1
         self._g_1 = g_1
         self._coupling = coupling
+        self.simplify = simplify
 
     @abstractmethod
     def rate(self, x: float, Y: float) -> float:
@@ -115,8 +116,8 @@ class LeptonAnnihilationToAxionMB(Process): # l_i + l_j -> X + gamma_k
     A class for the simplified version of the process of annihilation of two leptons into an axion and photon. Axion (massless) is the particle of interest in this reaction. It is assumed that the leptons are described by a Maxwell-Boltzmann distribution. We also assume that the axion number of dof is 1. 
     """
 
-    def __init__(self, m1, g_1, coupling):
-        super().__init__(m1 = m1, g_1 = g_1, coupling = coupling)
+    def __init__(self, m1, g_1, coupling, simplify: bool = False):
+        super().__init__(m1 = m1, g_1 = g_1, coupling = coupling, simplify = simplify)
         
         """
         Parameters
@@ -127,6 +128,8 @@ class LeptonAnnihilationToAxionMB(Process): # l_i + l_j -> X + gamma_k
             The number of degrees of freedom of the annihilated particles.
         coupling : float
             The coupling constant for this process (C_l/f_a)
+        simplify : bool
+            Whether to use the simplified version of the collision term (True) or the full version (False). The simplified version assumes that the lepton distribution is Maxwell-Boltzmann, while the full version uses the Fermi-Dirac distribution.
         """
 
     def sigma_ann(self, s: float) -> float:
@@ -148,15 +151,27 @@ class LeptonAnnihilationToAxionMB(Process): # l_i + l_j -> X + gamma_k
         
 
     def collisionTerm(self, x, q, f, feq):
+        x2 = x**2
 
-        # if x < 0.001:
-        #     C_func = (self._g_1**2*(e_g*self._coupling)**2*self._m1**3)*(np.exp(-q)/2/(2*np.pi)**3)*(np.pi**2/6)/x   
-        # else:
-        integral = np.array([quad(lambda ek: ((2*ek*q_i - x**2)*np.atanh(np.sqrt(1 - x**2/ek/q_i)) - ek*q_i*np.sqrt(1 - x**2/ek/q_i))/(np.exp(ek)-1.0),x**2/q_i,np.inf)[0] for q_i in q])
-            
-        C_func = (self._g_1**2*(e_g*self._coupling)**2*self._m1**3)*(np.exp(-q)/q/x/2/(2*np.pi)**3)*integral
+        def integrand(ek, q_i):
+            w = np.sqrt(1 - x2/(ek*q_i))
+            if self.simplify:
+                return ((2*ek*q_i - x2)*np.arctanh(w) - ek*q_i*w) / np.exp(ek)
+            else:
+                return ((2*ek*q_i - x2)*np.arctanh(w) - ek*q_i*w) / (np.exp(ek) - 1.0)
 
-        return (1 - f/feq)*C_func
+        integral = np.array([
+            quad(integrand, x2/q_i, np.inf, args=(q_i,))[0]
+            for q_i in q
+        ])
+
+        prefactor = self._g_1**2 * (e_g * self._coupling)**2 * self._m1**3
+        C_func = prefactor * np.exp(-q) / (q * x * 2 * (2*np.pi)**3) * integral
+
+        if self.simplify:
+            return C_func
+        else:
+            return (1 - f/feq) * C_func
 
 
 class PrimakoffScatteringMB(Process): # l_i + X -> l_j + gamma_k 
@@ -164,8 +179,8 @@ class PrimakoffScatteringMB(Process): # l_i + X -> l_j + gamma_k
     A class for the simplified version of the Primakoff scattering of axion on a lepton. Axion (massless) is the particle of interest in this reaction. It is assumed that the leptons are described by a Maxwell-Boltzmann distribution. We also assume that the axion number of dof is 1. 
     """
 
-    def __init__(self, m1, g_1, coupling):
-        super().__init__(m1 = m1, g_1 = g_1, coupling = coupling)
+    def __init__(self, m1, g_1, coupling, simplify: bool = False):
+        super().__init__(m1 = m1, g_1 = g_1, coupling = coupling, simplify = simplify)
         
         """
         Parameters
@@ -176,6 +191,8 @@ class PrimakoffScatteringMB(Process): # l_i + X -> l_j + gamma_k
             The number of degrees of freedom of the lepton.
         coupling : float
             The coupling constant for this process (C_l/f_a)
+        simplify : bool
+            Whether to use the simplified version of the collision term (True) or the full version (False). The simplified version assumes that the lepton distribution is Maxwell-Boltzmann, while the full version uses the Fermi-Dirac distribution.
         """
         
     def sigma_prim(self, s: float) -> float:
@@ -201,18 +218,31 @@ class PrimakoffScatteringMB(Process): # l_i + X -> l_j + gamma_k
         
 
     def collisionTerm(self, x, q, f, feq):
+        x2 = x**2
 
-        # norm = (0.5./g_ax).*(2*par(1)*par(2)^2)*mmu
-        # Integral_s = @(s,x) 2*s.*log(s./x.^2) + 4*x.^2.*log(s) - 5*s + x.^4./s; 
-        # y = norm*(q.*x)^(-1).*(exp(-q)./q/32/(2*pi)^3 ).*integral(@(ek) (Integral_s(x.^2 + 2*ek.*q + 2*sqrt(ek.^2 - x.^2).*q,x) - Integral_s(x.^2 + 2*ek.*q - 2*sqrt(ek.^2 - x.^2).*q,x))./(exp(ek)+1.0),x,Inf);
+        def s_integral(s):
+            return 2*s*np.log(s/x2) + 4*x2*np.log(s) - 5*s + x2**2/s
 
-        integral_s = lambda s,x: 2*s*np.log(s/x**2) + 4*x**2*np.log(s) - 5*s + x**4/s
-        
-        integral = np.array([quad(lambda ek: (integral_s(x**2 + 2*ek*q_i + 2*np.sqrt(ek**2 - x**2)*q_i,x) - integral_s(x**2 + 2*ek*q_i - 2*np.sqrt(ek**2 - x**2)*q_i,x))/(np.exp(ek)+1.0),x,np.inf)[0] for q_i in q])
-            
-        C_func = (2*self._g_1**2*(e_g*self._coupling)**2*self._m1**3)*(np.exp(-q)/q/x/32/(2*np.pi)**3)*integral
+        def integrand(ek, q_i):
+            root = 2*q_i*np.sqrt(ek**2 - x2)
+            base = x2 + 2*ek*q_i
+            if self.simplify:
+                return (s_integral(base + root) - s_integral(base - root)) / np.exp(ek)
+            else:
+                return (s_integral(base + root) - s_integral(base - root)) / (np.exp(ek) + 1.0)
 
-        return (1 - f/feq)*C_func
+        integral = np.array([
+            quad(integrand, x, np.inf, args=(q_i,))[0]
+            for q_i in q
+        ])
+
+        prefactor = 2 * self._g_1**2 * (e_g * self._coupling)**2 * self._m1**3
+        C = prefactor * np.exp(-q) / (q * x * 32 * (2*np.pi)**3) * integral
+
+        if self.simplify:
+            return C/2
+        else:
+            return (1 - f/feq) * C / 2
 
 
 

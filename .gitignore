@@ -1,2 +1,6 @@
 PyBolt.egg-info/
 **/__pycache__/
+logs/
+scratch/
+*.pkl
+.pytest_cache/

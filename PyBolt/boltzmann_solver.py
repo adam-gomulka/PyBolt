@@ -134,12 +134,14 @@ class Model:
             eq = np.sqrt((self._mDM * x / self._m) ** 2 + q**2)
 
             dfdq = np.zeros_like(fq)
+
             # Four-point method numerical derivative
             dfdq[2:-2] = (-fq[4:] + 8 * fq[3:-1] - 8 * fq[1:-3] + fq[:-4]) / (12 * dq)
             """
             Below we assume that the distribution function at the edges of the q grid always behaves as an equilibrium one
             and use an analytical expression for the derivative (to avoid instabilities)
             """
+
             dfdq[:2] = (2 / q[:2] - q[:2] / eq[:2]) * fq[:2]
             dfdq[-2:] = (2 / q[-2:] - q[-2:] / eq[-2:]) * fq[-2:]
 
@@ -254,24 +256,45 @@ class Model:
         plt.ylabel("x")
         plt.show()
 
-    def plotFinalPDF(self):
+    def plotFinalPDF(self, ax=None, show=True, f_kwargs=None, eq_kwargs=None):
         """ Plot the distribution function at the end of the evolution """
 
+        # --- Defaults for styling ---
+        if f_kwargs is None:
+            f_kwargs = {}
+        if eq_kwargs is None:
+            eq_kwargs = {"linestyle": "--"}
+        
+        x_final = self._x[-1]
+        f_final = self._f[-1, :]
+        q = self._q
+        
         Y_pde = (
             self._g
-            * np.trapz(self._f[-1,:], self._q)
-            * (self._m / self._x[-1]) ** 3
+            * np.trapz(f_final, q)
+            * (self._m / x_final) ** 3
             / 2
             / np.pi**2
-            / s_ent(self._m / self._x[-1])
+            / s_ent(self._m / x_final)
         )
+        
+        eq_norm = (Y_pde / Y_x_eq(self._m / x_final)) * self.equilibriumFunction(q)
 
-        plt.figure()
-        plt.plot(self._q, self._f[-1, :])
-        plt.plot(self._q, (Y_pde/Y_x_eq(self._m/self._x[-1]))*self.equilibriumFunction(self._q), "--")
-        plt.xlabel(r"$q$")
-        plt.ylabel(r"$q^2 f(q)$")
-        plt.title("Final distribution function")
-        plt.legend(["fBE", "Equilibrium (norm. to density)"], loc="upper right")
-        plt.grid()
-        plt.show()
+        if ax is None:
+            fig, ax = plt.subplots()
+        else:
+            fig = ax.figure
+
+        line_f, = ax.plot(q, f_final, **f_kwargs)
+        line_eq, = ax.plot(q, eq_norm, **eq_kwargs)
+        
+        
+        ax.set_xlabel(r"$q$")
+        ax.set_ylabel(r"$q^2 f(q)$")
+        ax.set_title("Final distribution function")
+        ax.legend(loc="upper right")
+        ax.grid(alpha=0.66)
+        if show:
+            plt.show()
+
+        return fig, ax, {"fBE": line_f, "Equilibrium": line_eq}
