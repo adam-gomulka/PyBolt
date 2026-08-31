@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import multiprocessing
 import os
 import sys
 import traceback
@@ -219,6 +220,14 @@ def process_index(index, f_a, parts_dir, config, overwrite=False, dry_run=False,
     return "solved"
 
 
+def _pool_worker(payload):
+    """Pickled entry point for the multiprocessing pool (must be module level)."""
+    index, f_a, parts_dir, config, overwrite, dry_run = payload
+    return process_index(
+        index, f_a, parts_dir, config, overwrite=overwrite, dry_run=dry_run
+    )
+
+
 def select_indices(f_vals, start, count):
     """The grid indices this task is responsible for, clipped to the grid.
 
@@ -271,12 +280,23 @@ def run_parts(args, config, f_vals):
             args.f_index_start, args.f_num))
 
     counts = {"solved": 0, "skipped": 0, "failed": 0}
-    for index in tqdm(index_list, desc="Solving fBE"):
-        outcome = process_index(
-            index, f_vals[index], args.parts_dir, config,
-            overwrite=args.overwrite, dry_run=args.dry_run,
-        )
-        counts[outcome] += 1
+
+    if args.nproc > 1:
+        payloads = [
+            (index, f_vals[index], args.parts_dir, config, args.overwrite,
+             args.dry_run)
+            for index in index_list
+        ]
+        with multiprocessing.Pool(args.nproc) as pool:
+            for outcome in pool.imap_unordered(_pool_worker, payloads):
+                counts[outcome] += 1
+    else:
+        for index in tqdm(index_list, desc="Solving fBE"):
+            outcome = process_index(
+                index, f_vals[index], args.parts_dir, config,
+                overwrite=args.overwrite, dry_run=args.dry_run,
+            )
+            counts[outcome] += 1
 
     print("solved={solved} skipped={skipped} failed={failed}".format(**counts))
     return counts
