@@ -10,7 +10,8 @@ import os
 
 import numpy as np
 
-HEADER = "# f_a, f(q)\n"
+HEADER = "# f_a, f(q)\n"          # phase-space mode (fbe)
+HEADER_NUMBER_DENSITY = "# f_a, Y\n"  # number-density mode (nbe)
 VALUE_FORMAT = "{:.5e}"
 PART_PREFIX = "f_"
 PART_SUFFIX = ".dat"

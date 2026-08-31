@@ -27,6 +27,9 @@ Q_END = 15.0
 M_DM = 1.0e-10   # GeV, not really relevant
 G_X = 1.0        # we default to g_x = 1 as for alps
 PARTICLE_TYPE = "b"
+Y0 = 0.0         # the axion population starts empty, as f0 = 0 does for the fBE
+
+MODES = ("fbe", "nbe")
 
 SOLVER_OPTIONS = {
     "method": "LSODA",
@@ -70,6 +73,7 @@ class RunConfig:
     x_lin: np.ndarray
     q_lin: np.ndarray
     simplify: bool
+    mode: str = "fbe"
     solver_options: dict = field(default_factory=lambda: dict(SOLVER_OPTIONS))
 
 
@@ -93,6 +97,10 @@ def parse_args(argv=None):
                         default=False,
                         help="Simplify the collision terms by setting f/f_eq=1 and "
                              "neglecting quantum corrections? (default=False)")
+    parser.add_argument("--mode", type=str, choices=MODES, default="fbe",
+                        help="fbe: solve the phase-space equation and store the "
+                             "final f(q). nbe: solve the number-density equation "
+                             "and store the final Y. (default: fbe)")
     parser.add_argument("--parts-dir", type=str, default=None,
                         help="Write one part file per f index into this directory "
                              "instead of one combined output file")
@@ -125,6 +133,7 @@ def build_config(args):
         x_lin=np.linspace(m_lepton / T_reh, X_FIN, N_X),
         q_lin=np.linspace(Q_START, Q_END, N_Q),
         simplify=args.simplify,
+        mode=args.mode,
     )
 
 
@@ -148,17 +157,73 @@ def solve_distribution(f_a, config):
     return model.getSolution()[-1, :]
 
 
+def solve_number_density(f_a, config):
+    """Solve the number-density Boltzmann equation for one f_a.
+
+    Returns a one-element array holding the final comoving abundance Y, so that a
+    row is written exactly like an fBE row -- "f_a,Y" instead of "f_a,f(q)...".
+    """
+    inv_f = 1.0 / f_a
+
+    model = bz.Model(config.m_lepton, config.mDM, config.g_x, PARTICLE_TYPE)
+    model.changeGrid(config.x_lin, config.q_lin)
+
+    annihilation = LeptonAnnihilationToAxionMB(
+        config.m_lepton, config.g_lepton, inv_f, config.simplify
+    )
+    primakoff = PrimakoffScatteringMB(
+        config.m_lepton, config.g_lepton, inv_f, config.simplify
+    )
+
+    def total_rate(x, Y):
+        return annihilation.rate(x, Y) + primakoff.rate(x, Y)
+
+    abundance = model.solve_nBE(config.x_lin, total_rate, Y0)
+
+    # solve_nBE returns None instead of raising when the integration fails; turn
+    # that into an exception so the caller writes a .fail marker like any other
+    # failure rather than silently storing a bad row.
+    if abundance is None:
+        raise RuntimeError("solve_nBE did not converge for f_a={:.5e}".format(f_a))
+
+    return np.array([abundance[-1]])
+
+
+def solve_for_mode(f_a, config):
+    """Dispatch to the solver this run's mode asks for."""
+    if config.mode == "nbe":
+        return solve_number_density(f_a, config)
+    return solve_distribution(f_a, config)
+
+
+def expected_columns(config):
+    """Number of comma-separated fields in one data row, for this run's mode.
+
+    nbe stores a single scalar per f value, fbe the whole final f(q).
+    """
+    if config.mode == "nbe":
+        return 2
+    return 1 + len(config.q_lin)
+
+
+def header_for(config):
+    """The header line the merged file of this mode should carry."""
+    if config.mode == "nbe":
+        return axion_grid.HEADER_NUMBER_DENSITY
+    return axion_grid.HEADER
+
+
 def run_serial(config, f_vals, output):
     """Solve the whole grid into one file, appending as each f value finishes."""
     print("Writing results incrementally to {}...".format(output))
 
     with open(output, "w") as handle:
-        handle.write(axion_grid.HEADER)
+        handle.write(header_for(config))
         handle.flush()
 
-        for f_a in tqdm(f_vals, desc="Solving fBE"):
+        for f_a in tqdm(f_vals, desc="Solving " + config.mode):
             try:
-                distribution = solve_distribution(f_a, config)
+                distribution = solve_for_mode(f_a, config)
             except Exception as error:
                 print("Error solving for f={:.2e}: {}".format(f_a, error),
                       file=sys.stderr)
@@ -189,16 +254,16 @@ def process_index(index, f_a, parts_dir, config, overwrite=False, dry_run=False,
     """
     part_path = os.path.join(parts_dir, axion_grid.part_filename(index))
     fail_path = os.path.join(parts_dir, axion_grid.fail_filename(index))
-    expected_width = 1 + len(config.q_lin)
+    expected_width = expected_columns(config)
 
     if not overwrite and part_is_valid(part_path, expected_width):
         return "skipped"
 
     try:
         if dry_run:
-            distribution = np.zeros(len(config.q_lin))
+            distribution = np.zeros(expected_width - 1)
         else:
-            distribution = (solver or solve_distribution)(f_a, config)
+            distribution = (solver or solve_for_mode)(f_a, config)
         axion_grid.atomic_write_text(
             part_path, axion_grid.format_row(f_a, distribution)
         )
@@ -258,6 +323,9 @@ def select_indices(f_vals, start, count):
 def build_meta(args, config):
     """The run metadata written next to the part files."""
     return {
+        "mode": config.mode,
+        "n_columns": expected_columns(config),
+        "header": header_for(config),
         "lepton": args.lepton.lower(),
         "m_lepton": config.m_lepton,
         "g_lepton": config.g_lepton,
