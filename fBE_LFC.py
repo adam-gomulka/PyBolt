@@ -350,10 +350,49 @@ def build_meta(args, config):
     }
 
 
+class ParameterMismatch(Exception):
+    """The parts directory was built by a run with different parameters."""
+
+
+def check_meta_matches(parts_dir, meta):
+    """Refuse to add parts to a directory built with other parameters.
+
+    ``meta.json`` is written once and never updated, so without this a rerun with
+    a changed f range or q grid would leave stale metadata describing the old run.
+    The merge would still refuse to write -- the gate holds -- but it would
+    complain about row widths or f_a mismatches, which points at the symptom
+    rather than the cause.
+    """
+    try:
+        stored = axion_grid.read_meta(parts_dir)
+    except FileNotFoundError:
+        return
+
+    differences = [
+        key for key in sorted(set(stored) | set(meta))
+        if stored.get(key) != meta.get(key)
+    ]
+    if not differences:
+        return
+
+    lines = [
+        "parts directory {} was built with different parameters:".format(parts_dir)
+    ]
+    for key in differences:
+        lines.append("  {}: stored {!r}, requested {!r}".format(
+            key, stored.get(key), meta.get(key)))
+    lines.append("")
+    lines.append("Use a different --output, or delete the parts directory to start")
+    lines.append("over. Reusing it would mix results from two different runs.")
+    raise ParameterMismatch("\n".join(lines))
+
+
 def run_parts(args, config, f_vals):
     """Solve this task's slice into ``args.parts_dir``. Returns outcome counts."""
     os.makedirs(args.parts_dir, exist_ok=True)
-    axion_grid.write_meta_if_absent(args.parts_dir, build_meta(args, config))
+    meta = build_meta(args, config)
+    check_meta_matches(args.parts_dir, meta)
+    axion_grid.write_meta_if_absent(args.parts_dir, meta)
 
     index_list = list(select_indices(f_vals, args.f_index_start, args.f_count))
     if index_list:
@@ -403,7 +442,12 @@ def main(argv=None):
     f_vals = axion_grid.f_grid(args.f_min, args.f_max, args.f_num)
 
     if args.parts_dir is not None:
-        run_parts(args, config, f_vals)
+        try:
+            run_parts(args, config, f_vals)
+        except ParameterMismatch as error:
+            # A task-level error, not a per-index one: exit non-zero.
+            print("ERROR: " + str(error), file=sys.stderr)
+            return 2
     else:
         run_serial(config, f_vals, args.output)
     return 0
