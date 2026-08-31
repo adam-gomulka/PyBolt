@@ -1,0 +1,11 @@
+# This repository is edited on Windows but runs on a Linux cluster, so every
+# text file must keep LF endings in the working tree.  Without this, Git for
+# Windows (core.autocrlf=true) checks the PBS scripts out with CRLF and the
+# cluster fails them with "bad interpreter: /bin/bash^M".  CRLF in the .dat
+# files would also break the byte-identical serial/parallel comparison.
+* text=auto eol=lf
+
+# Notebooks and binaries are left exactly as they are.
+*.ipynb -text
+*.pdf binary
+*.pkl binary
