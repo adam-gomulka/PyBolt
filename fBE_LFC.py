@@ -220,6 +220,22 @@ def process_index(index, f_a, parts_dir, config, overwrite=False, dry_run=False,
     return "solved"
 
 
+def pool_context():
+    """A multiprocessing context that is safe when the parent has threads.
+
+    The Linux default is fork, which can deadlock a child that inherits a lock
+    held by another thread of the parent -- and the parent here has imported
+    numpy and scipy.  forkserver is cheap and safe; spawn is the portable
+    fallback.  Either costs one process start per worker, which is nothing
+    beside a solve.
+    """
+    available = multiprocessing.get_all_start_methods()
+    for method in ("forkserver", "spawn"):
+        if method in available:
+            return multiprocessing.get_context(method)
+    return multiprocessing.get_context()
+
+
 def _pool_worker(payload):
     """Pickled entry point for the multiprocessing pool (must be module level)."""
     index, f_a, parts_dir, config, overwrite, dry_run = payload
@@ -287,7 +303,7 @@ def run_parts(args, config, f_vals):
              args.dry_run)
             for index in index_list
         ]
-        with multiprocessing.Pool(args.nproc) as pool:
+        with pool_context().Pool(args.nproc) as pool:
             for outcome in pool.imap_unordered(_pool_worker, payloads):
                 counts[outcome] += 1
     else:
