@@ -9,3 +9,10 @@ The current version includes:
 1) 2-body decay process that produce one dark matter particle (which is the case of some dark radiation models like axions from lepton flavor-violating decays);
 2) Simplified treatment of the lepton annihilation into an axion and photon (assuming Maxwell-Boltzmann distribution for leptons)
 3) Simplified treatment of the Primakoff scattering on leptons (assuming Maxwell-Boltzmann distribution for leptons)
+
+## Generating distribution files
+
+Axion distribution files over a grid of decay constants are produced by a resumable,
+PBS-array-parallel pipeline (`submit_axion.sh` -> `fBE_LFC.py` -> `merge_distributions.py`).
+
+See [docs/WORKFLOW.md](docs/WORKFLOW.md) for how to run it.
