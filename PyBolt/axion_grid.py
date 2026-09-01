@@ -19,7 +19,11 @@ FAIL_SUFFIX = ".fail"
 INDEX_DIGITS = 5
 META_FILENAME = "meta.json"
 Q_GRID_FILENAME = "q_grid.dat"
-Q_GRID_SUFFIX = ".q.dat"
+
+# The q grid is written into the .dat as a second comment line, column-aligned
+# with the data rows: field 0 is the label, fields 1..N are the q values sitting
+# above the f(q) values they belong to.
+Q_HEADER_PREFIX = "# q,"
 
 
 def f_grid(f_min, f_max, f_num):
@@ -107,6 +111,32 @@ def format_grid(values):
     argument: a single row it reads with ``pd.read_csv(..., header=None)``.
     """
     return ",".join(VALUE_FORMAT.format(float(value)) for value in values) + "\n"
+
+
+def format_q_header(q_values):
+    """The q-grid comment line for a merged .dat."""
+    return Q_HEADER_PREFIX + format_grid(q_values)
+
+
+def read_q_grid_from_file(path):
+    """The q grid recorded in a merged .dat, or None if it carries none.
+
+    nbe files have no q axis, and files written before the grid was recorded have
+    no q line either.
+
+    Downstream readers that only want the numbers do not need this: every header
+    line starts with '#', so ``np.loadtxt(path, delimiter=',', comments='#')`` and
+    ``pd.read_csv(path, comment='#', header=None)`` both skip them regardless of
+    how many there are.
+    """
+    with open(path) as handle:
+        for line in handle:
+            if not line.startswith("#"):
+                return None
+            if line.startswith(Q_HEADER_PREFIX):
+                fields = line[len(Q_HEADER_PREFIX):].strip().split(",")
+                return np.array([float(field) for field in fields])
+    return None
 
 
 def q_grid_path(parts_dir):

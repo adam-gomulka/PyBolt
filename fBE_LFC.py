@@ -227,13 +227,11 @@ def run_serial(config, f_vals, output):
     """Solve the whole grid into one file, appending as each f value finishes."""
     print("Writing results incrementally to {}...".format(output))
 
-    if config.mode == "fbe":
-        q_path = output + axion_grid.Q_GRID_SUFFIX
-        axion_grid.atomic_write_text(q_path, axion_grid.format_grid(config.q_lin))
-        print("Wrote the q grid to {}".format(q_path))
 
     with open(output, "w") as handle:
         handle.write(header_for(config))
+        if config.mode == "fbe":
+            handle.write(axion_grid.format_q_header(config.q_lin))
         handle.flush()
 
         for f_a in tqdm(f_vals, desc="Solving " + config.mode):
