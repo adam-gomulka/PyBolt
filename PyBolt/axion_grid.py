@@ -18,6 +18,8 @@ PART_SUFFIX = ".dat"
 FAIL_SUFFIX = ".fail"
 INDEX_DIGITS = 5
 META_FILENAME = "meta.json"
+Q_GRID_FILENAME = "q_grid.dat"
+Q_GRID_SUFFIX = ".q.dat"
 
 
 def f_grid(f_min, f_max, f_num):
@@ -96,6 +98,46 @@ def atomic_write_text(path, text):
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, path)
+
+
+def format_grid(values):
+    """One line of comma-separated values, no leading f_a.
+
+    This is the layout ``fit_params.load_data`` expects from its ``q_file``
+    argument: a single row it reads with ``pd.read_csv(..., header=None)``.
+    """
+    return ",".join(VALUE_FORMAT.format(float(value)) for value in values) + "\n"
+
+
+def q_grid_path(parts_dir):
+    """Path of the recorded q grid inside a parts directory."""
+    return os.path.join(parts_dir, Q_GRID_FILENAME)
+
+
+def write_q_grid_if_absent(parts_dir, q_values):
+    """Record the q grid the solver used. Returns True if it wrote.
+
+    Written rather than re-derived from the metadata bounds so the values that
+    ship next to the data are exactly the ones the solver saw, with no chance of
+    the two drifting apart.
+    """
+    path = q_grid_path(parts_dir)
+    if os.path.exists(path):
+        return False
+    atomic_write_text(path, format_grid(q_values))
+    return True
+
+
+def read_q_grid_text(parts_dir):
+    """The recorded q grid line, or None when the run did not record one.
+
+    nbe runs have no q axis in their output, so they record no grid.
+    """
+    path = q_grid_path(parts_dir)
+    if not os.path.exists(path):
+        return None
+    with open(path) as handle:
+        return handle.read()
 
 
 def meta_path(parts_dir):

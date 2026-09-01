@@ -18,12 +18,14 @@ except ImportError:  # the cluster environment does not ship tqdm
     def tqdm(iterable, **kwargs):
         return iterable
 
-# Grid and model parameters, held fixed so output stays comparable across runs.
+# Grid and model parameters.  The q grid is set from the command line; the x grid
+# stays fixed, since x_lin is only solve_ivp's t_eval and its size does not affect
+# the result.
 N_X = 500
-N_Q = 100
 X_FIN = 30.0
-Q_START = 0.01
-Q_END = 15.0
+DEFAULT_Q_MIN = 1e-2
+DEFAULT_Q_MAX = 20.0
+DEFAULT_Q_NUM = 250
 M_DM = 1.0e-10   # GeV, not really relevant
 G_X = 1.0        # we default to g_x = 1 as for alps
 PARTICLE_TYPE = "b"
@@ -91,8 +93,16 @@ def parse_args(argv=None):
                         help="Minimum axion decay constant f_a in GeV (default: 1e7)")
     parser.add_argument("--f_max", type=float, default=1e9,
                         help="Maximum axion decay constant f_a in GeV (default: 1e9)")
-    parser.add_argument("--f_num", type=int, default=200,
-                        help="Length of axion decay const. grid (default: 200)")
+    parser.add_argument("--f_num", type=int, default=100,
+                        help="Length of axion decay const. grid (default: 100)")
+    parser.add_argument("--q_min", type=float, default=DEFAULT_Q_MIN,
+                        help="Lowest q = p/T on the momentum grid (default: 1e-2)")
+    parser.add_argument("--q_max", type=float, default=DEFAULT_Q_MAX,
+                        help="Highest q = p/T on the momentum grid (default: 20)")
+    parser.add_argument("--q_num", type=int, default=DEFAULT_Q_NUM,
+                        help="Number of momentum grid points (default: 250). The "
+                             "grid is linear: the derivative stencil in "
+                             "boltzmann_solver assumes uniform spacing.")
     parser.add_argument("--simplify", action=argparse.BooleanOptionalAction,
                         default=False,
                         help="Simplify the collision terms by setting f/f_eq=1 and "
@@ -131,7 +141,7 @@ def build_config(args):
         g_x=G_X,
         T_reh=T_reh,
         x_lin=np.linspace(m_lepton / T_reh, X_FIN, N_X),
-        q_lin=np.linspace(Q_START, Q_END, N_Q),
+        q_lin=np.linspace(args.q_min, args.q_max, args.q_num),
         simplify=args.simplify,
         mode=args.mode,
     )
@@ -216,6 +226,11 @@ def header_for(config):
 def run_serial(config, f_vals, output):
     """Solve the whole grid into one file, appending as each f value finishes."""
     print("Writing results incrementally to {}...".format(output))
+
+    if config.mode == "fbe":
+        q_path = output + axion_grid.Q_GRID_SUFFIX
+        axion_grid.atomic_write_text(q_path, axion_grid.format_grid(config.q_lin))
+        print("Wrote the q grid to {}".format(q_path))
 
     with open(output, "w") as handle:
         handle.write(header_for(config))
@@ -393,6 +408,10 @@ def run_parts(args, config, f_vals):
     meta = build_meta(args, config)
     check_meta_matches(args.parts_dir, meta)
     axion_grid.write_meta_if_absent(args.parts_dir, meta)
+
+    # Only fbe output has a q axis; an nbe row is a single Y.
+    if config.mode == "fbe":
+        axion_grid.write_q_grid_if_absent(args.parts_dir, config.q_lin)
 
     index_list = list(select_indices(f_vals, args.f_index_start, args.f_count))
     if index_list:
