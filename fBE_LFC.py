@@ -10,6 +10,11 @@ import numpy as np
 
 from PyBolt import axion_grid
 from PyBolt import boltzmann_solver as bz
+from PyBolt.background import (
+    PerturbativeReheating,
+    StandardCosmology,
+    SuddenDecayReheating,
+)
 from PyBolt.processes import LeptonAnnihilationToAxionMB, PrimakoffScatteringMB
 
 try:
@@ -32,6 +37,7 @@ PARTICLE_TYPE = "b"
 Y0 = 0.0         # the axion population starts empty, as f0 = 0 does for the fBE
 
 MODES = ("fbe", "nbe")
+BACKGROUNDS = ("standard", "sudden", "reheating")
 
 SOLVER_OPTIONS = {
     "method": "LSODA",
@@ -71,10 +77,11 @@ class RunConfig:
     g_lepton: float
     mDM: float
     g_x: float
-    T_reh: float
+    T_start: float
     x_lin: np.ndarray
     q_lin: np.ndarray
     simplify: bool
+    background: object = field(default_factory=StandardCosmology)
     mode: str = "fbe"
     solver_options: dict = field(default_factory=lambda: dict(SOLVER_OPTIONS))
 
@@ -86,7 +93,18 @@ def parse_args(argv=None):
     parser.add_argument("--lepton", type=str, required=True,
                         help="Lepton type (e.g., muon, electron)")
     parser.add_argument("--ratio", type=float, required=True,
-                        help="T_reh_to_mass_ratio: Ratio of Reheating T to Lepton mass")
+                        help="Ratio of the run's starting temperature to the lepton "
+                             "mass. Named --ratio for backwards compatibility; it "
+                             "sets T_start, not the reheat temperature (--t-rh).")
+    parser.add_argument("--bg", type=str, choices=BACKGROUNDS, default="standard",
+                        help="Expansion history. standard: radiation domination "
+                             "with conserved entropy. sudden: piecewise-analytic "
+                             "reheating, hard switch at --t-rh. reheating: the same "
+                             "scenario integrated as a two-fluid system. "
+                             "(default: standard)")
+    parser.add_argument("--t-rh", type=float, default=None,
+                        help="Reheat temperature in GeV, required by --bg sudden "
+                             "and --bg reheating. Must be below T_start.")
     parser.add_argument("--output", type=str, default=None,
                         help="Name for the combined output file (serial mode)")
     parser.add_argument("--f_min", type=float, default=1e7,
@@ -129,20 +147,45 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
+def build_background(args, T_start):
+    """The expansion history this run solves against.
+
+    Both reheating tiers take the same T_rh and therefore the same Gamma, so the
+    cheap and the numerical background can be compared directly.
+    """
+    if args.bg == "standard":
+        return StandardCosmology()
+
+    if args.t_rh is None:
+        raise ValueError("--bg {} requires --t-rh".format(args.bg))
+    if args.t_rh >= T_start:
+        raise ValueError(
+            "--t-rh ({:.4e} GeV) must be below the starting temperature "
+            "({:.4e} GeV), otherwise the run begins after reheating has already "
+            "finished and the background is just the standard one.".format(
+                args.t_rh, T_start)
+        )
+
+    if args.bg == "sudden":
+        return SuddenDecayReheating(T_rh=args.t_rh)
+    return PerturbativeReheating(T_rh=args.t_rh, T_start=T_start)
+
+
 def build_config(args):
     """Assemble the run configuration from parsed command-line arguments."""
     m_lepton, g_lepton = lepton_properties(args.lepton)
-    T_reh = args.ratio * m_lepton
+    T_start = args.ratio * m_lepton
 
     return RunConfig(
         m_lepton=m_lepton,
         g_lepton=g_lepton,
         mDM=M_DM,
         g_x=G_X,
-        T_reh=T_reh,
-        x_lin=np.linspace(m_lepton / T_reh, X_FIN, N_X),
+        T_start=T_start,
+        x_lin=np.linspace(m_lepton / T_start, X_FIN, N_X),
         q_lin=np.linspace(args.q_min, args.q_max, args.q_num),
         simplify=args.simplify,
+        background=build_background(args, T_start),
         mode=args.mode,
     )
 
@@ -151,7 +194,10 @@ def solve_distribution(f_a, config):
     """Solve the full Boltzmann equation for one f_a; returns the final f(q)."""
     inv_f = 1.0 / f_a
 
-    model = bz.Model(config.m_lepton, config.mDM, config.g_x, PARTICLE_TYPE)
+    model = bz.Model(
+        config.m_lepton, config.mDM, config.g_x, PARTICLE_TYPE,
+        background=config.background,
+    )
     model.changeGrid(config.x_lin, config.q_lin)
 
     annihilation = LeptonAnnihilationToAxionMB(
@@ -175,7 +221,10 @@ def solve_number_density(f_a, config):
     """
     inv_f = 1.0 / f_a
 
-    model = bz.Model(config.m_lepton, config.mDM, config.g_x, PARTICLE_TYPE)
+    model = bz.Model(
+        config.m_lepton, config.mDM, config.g_x, PARTICLE_TYPE,
+        background=config.background,
+    )
     model.changeGrid(config.x_lin, config.q_lin)
 
     annihilation = LeptonAnnihilationToAxionMB(
@@ -334,8 +383,18 @@ def select_indices(f_vals, start, count):
 
 
 def build_meta(args, config):
-    """The run metadata written next to the part files."""
-    return {
+    """The run metadata written next to the part files.
+
+    The background keys are added only when the background is not the standard one.
+    check_meta_matches compares every key, so writing them unconditionally would make
+    every parts directory created before this feature look like a parameter mismatch
+    and refuse to resume.
+
+    The "T_reh" key keeps its name for the same reason, even though it holds the
+    run's starting temperature rather than a reheat temperature. The reheat
+    temperature is "background_T_rh"; the two are deliberately not spelled alike.
+    """
+    meta = {
         "mode": config.mode,
         "n_columns": expected_columns(config),
         "header": header_for(config),
@@ -343,7 +402,7 @@ def build_meta(args, config):
         "m_lepton": config.m_lepton,
         "g_lepton": config.g_lepton,
         "ratio": args.ratio,
-        "T_reh": config.T_reh,
+        "T_reh": config.T_start,
         "mDM": config.mDM,
         "g_x": config.g_x,
         "particle_type": PARTICLE_TYPE,
@@ -361,6 +420,12 @@ def build_meta(args, config):
         "q_spacing": "linear",
         "solver_options": dict(config.solver_options),
     }
+
+    if args.bg != "standard":
+        meta["background"] = args.bg
+        meta["background_T_rh"] = args.t_rh
+
+    return meta
 
 
 class ParameterMismatch(Exception):
@@ -446,10 +511,13 @@ def main(argv=None):
     args = parse_args(argv)
     config = build_config(args)
 
-    print("Starting run for T_reh/m_{} = {} (T_reh = {:.4e} GeV)".format(
-        args.lepton.lower(), args.ratio, config.T_reh))
-    if config.T_reh < 1e-3:
-        print("Warning: reheating temperature below 1 MeV is unreliable in this setup.")
+    print("Starting run for T_start/m_{} = {} (T_start = {:.4e} GeV)".format(
+        args.lepton.lower(), args.ratio, config.T_start))
+    if config.T_start < 1e-3:
+        print("Warning: starting temperature below 1 MeV is unreliable in this setup.")
+    if args.bg != "standard":
+        print("Background: {} (T_rh = {:.4e} GeV, Gamma = {:.4e} GeV)".format(
+            args.bg, args.t_rh, config.background.Gamma))
 
     if (args.parts_dir is None) == (args.output is None):
         print("ERROR: give exactly one of --output (serial) or --parts-dir (parallel)",
