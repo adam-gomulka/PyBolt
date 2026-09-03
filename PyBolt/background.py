@@ -20,23 +20,13 @@ from scipy.interpolate import CubicSpline
 
 from .constants import MPL
 from .cosmology import (
+    G_PLATEAU,
     H as H_radiation,
-    LOG10_T_TABLE_MAX,
     g_rho,
     gtilda,
-    gy_spline,
+    h_s,
+    s_ent,
 )
-
-_dg_dlog10T = gy_spline.derivative()
-
-
-def dlng_rho_dlnT(T):
-    """``dln g_rho / dln T``. Zero above the table, where g_rho is clamped flat."""
-
-    log10T = np.log10(T)
-    inside = _dg_dlog10T(log10T) / (g_rho(T) * np.log(10.0))
-
-    return np.where(log10T > LOG10_T_TABLE_MAX, 0.0, inside)
 
 
 class Background:
@@ -163,12 +153,23 @@ class PerturbativeReheating(Background):
     Integrates, in ``ln a``,
 
         d rho_phi / dlna = -3 rho_phi - Gamma rho_phi / H
-        d rho_R   / dlna = -4 rho_R   + Gamma rho_phi / H
-        H = sqrt(8 pi (rho_phi + rho_R) / 3) / MPL
+        d s       / dlna = -3 s       + Gamma rho_phi / (H T)
+        H = sqrt(8 pi (rho_phi + rho_R(T)) / 3) / MPL
 
-    and splines ``H`` and ``w`` against ``T`` recovered from ``rho_R``. Unlike
+    and splines ``H`` and ``w`` against ``T`` recovered from ``s``. Unlike
     ``SuddenDecayReheating`` the transition at ``T_rh`` is resolved, so the two
     together measure the error of the cheap background.
+
+    The bath is sourced through its *entropy*, not its energy. Decay deposits
+    ``Gamma rho_phi`` into a bath at temperature ``T`` and so produces entropy at
+    ``Gamma rho_phi / T``. Evolving ``rho_R`` as ``-4 rho_R + source`` instead would
+    assume ``g_rho`` is constant, which fails wherever a species is going
+    non-relativistic -- most importantly across the QCD transition, which is exactly
+    where a low ``T_rh`` puts the interesting physics.
+
+    Both limits then come out exact rather than approximate. With the source off,
+    ``s a^3`` is constant and ``w -> 1/(1+gtilda)``, which is ``StandardCosmology``
+    including every dof feature. Deep in reheating ``s ~ a^(-9/8)`` and ``w -> 3/8``.
 
     Integration starts *on* the reheating attractor at ``start_factor * T_start``
     rather than from ``rho_R = 0``, which skips the rising-temperature branch
@@ -177,10 +178,10 @@ class PerturbativeReheating(Background):
     the integration comes in without moving the resulting ``H(T)``.
 
     It stops once the source term has died away, and below that hands over to
-    ``StandardCosmology``. The handover is continuous in ``H`` by construction, and
-    is also where the two-fluid model stops being the right description: the
-    ``-4 rho_R`` law assumes a constant ``g_rho``, whereas ``StandardCosmology``
-    tracks entropy conservation through the dof features properly.
+    ``StandardCosmology``. The handover is continuous in both ``H`` and ``w`` by
+    construction: with the inflaton gone ``sqrt(8 pi rho_R/3)/MPL`` is exactly
+    ``H_rad``, and ``s a^3 = const`` is exactly what ``StandardCosmology`` assumes.
+    It is a shortcut past integrating a dead source, not a change of model.
 
     Parameters
     ----------
@@ -194,8 +195,8 @@ class PerturbativeReheating(Background):
         How far above ``T_start`` to begin integrating. Affects only coverage.
     """
 
-    # Hand over to the standard cosmology once the source is this small compared
-    # with the radiation it is feeding.
+    # Hand over to the standard cosmology once entropy injection is this small
+    # compared with the -3s dilution it is competing against.
     SOURCE_FLOOR = 1e-6
 
     _LNA_MAX = 200.0
@@ -234,15 +235,15 @@ class PerturbativeReheating(Background):
         return np.pi**2 * g_rho(T) * T**4 / 30.0
 
     @staticmethod
-    def _T_of_rho_R(rho_R):
-        """Invert rho_R = pi^2 g_rho(T) T^4 / 30 by fixed-point iteration.
+    def _T_of_entropy(s):
+        """Invert s = h_s(T) 4 pi^2 T^3 / 90 by fixed-point iteration.
 
-        g_rho varies slowly with T and is flat above the table, so a handful of
-        passes is plenty.
+        h_s varies slowly with T and is flat above the table, so a handful of passes
+        is plenty. Seeded with the plateau value.
         """
-        T = (30.0 * rho_R / (np.pi**2 * 106.75)) ** 0.25
-        for _ in range(8):
-            T = (30.0 * rho_R / (np.pi**2 * g_rho(T))) ** 0.25
+        T = (90.0 * s / (4.0 * np.pi**2 * G_PLATEAU)) ** (1.0 / 3.0)
+        for _ in range(12):
+            T = (90.0 * s / (4.0 * np.pi**2 * h_s(T))) ** (1.0 / 3.0)
 
         return T
 
@@ -256,6 +257,7 @@ class PerturbativeReheating(Background):
         rho_R_hi = self._rho_R_of_T(T_hi)
         rho_tot_hi = 3.0 * MPL**2 * H_hi**2 / (8.0 * np.pi)
         rho_phi_hi = rho_tot_hi - rho_R_hi
+        s_hi = s_ent(T_hi)
 
         if rho_phi_hi <= 0.0:
             raise ValueError(
@@ -263,17 +265,29 @@ class PerturbativeReheating(Background):
                 "probably too close together".format(T_hi)
             )
 
-        def rhs(lna, y):
-            rho_phi, rho_R = y
-            source = self._Gamma * rho_phi / self._hubble(rho_phi, rho_R)
+        def state(y):
+            """(T, rho_R, H, entropy source) for one point of the integration."""
+            rho_phi, s = y
+            T = self._T_of_entropy(s)
+            rho_R = self._rho_R_of_T(T)
+            H = self._hubble(rho_phi, rho_R)
 
-            return [-3.0 * rho_phi - source, -4.0 * rho_R + source]
+            return T, rho_R, H, self._Gamma * rho_phi / (H * T)
+
+        def rhs(lna, y):
+            rho_phi, s = y
+            T, _, H, entropy_source = state(y)
+
+            return [
+                -3.0 * rho_phi - self._Gamma * rho_phi / H,
+                -3.0 * s + entropy_source,
+            ]
 
         def source_exhausted(lna, y):
-            rho_phi, rho_R = y
-            source = self._Gamma * rho_phi / self._hubble(rho_phi, rho_R)
+            """Injection has become negligible against the -3s dilution term."""
+            _, _, _, entropy_source = state(y)
 
-            return source / (rho_R * 4.0) - self.SOURCE_FLOOR
+            return entropy_source / (3.0 * y[1]) - self.SOURCE_FLOOR
 
         source_exhausted.terminal = True
         source_exhausted.direction = -1
@@ -282,7 +296,7 @@ class PerturbativeReheating(Background):
         sol = solve_ivp(
             rhs,
             [0.0, self._LNA_MAX],
-            [rho_phi_hi, rho_R_hi],
+            [rho_phi_hi, s_hi],
             t_eval=lna,
             events=source_exhausted,
             method="LSODA",
@@ -293,14 +307,17 @@ class PerturbativeReheating(Background):
         if not sol.success:
             raise RuntimeError("reheating background failed to integrate: " + sol.message)
 
-        rho_phi, rho_R = sol.y
-        T = self._T_of_rho_R(rho_R)
+        rho_phi, s = sol.y
+        T = self._T_of_entropy(s)
+        rho_R = self._rho_R_of_T(T)
         H = self._hubble(rho_phi, rho_R)
 
-        # w = -dlnT/dlna, from dln(rho_R)/dlna and rho_R ~ g_rho(T) T^4.
-        source = self._Gamma * rho_phi / H
-        dln_rho_R_dlna = -4.0 + source / rho_R
-        w = -dln_rho_R_dlna / (4.0 + dlng_rho_dlnT(T))
+        # w = -dlnT/dlna, from dln(s)/dlna and s ~ h_s(T) T^3, so that
+        # dln s/dlna = 3 (1 + gtilda) dlnT/dlna. With the source off this is exactly
+        # 1/(1+gtilda); deep in reheating s ~ a^(-9/8) and it is exactly 3/8.
+        entropy_source = self._Gamma * rho_phi / (H * T)
+        dln_s_dlna = -3.0 + entropy_source / s
+        w = -dln_s_dlna / (3.0 * (1.0 + gtilda(T)))
 
         # T falls monotonically on this branch; splines need an increasing abscissa.
         order = np.argsort(T)
