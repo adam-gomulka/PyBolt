@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from . import constants as const
 from .cosmology import H_t, H, s_ent, gtilda, Y_x_eq
+from .background import StandardCosmology
 from scipy.integrate import solve_ivp
 import time
 import logging
@@ -28,6 +29,9 @@ class Model:
         The initial grid of x=m/T values [1]
     q: np.array
         The initial grid of DM momenta divided by T [1]
+    background: Background
+        The expansion history to solve against. Defaults to StandardCosmology, i.e.
+        radiation domination with a conserved comoving entropy.
 
     The grid can be changed later.
     """
@@ -40,11 +44,13 @@ class Model:
         p_type: str = "m",
         x: np.array = np.linspace(1.0, 10.0, 10),
         q: np.array = np.linspace(0.1, 20.0, 10),
+        background=None,
     ):
         self._m = m
         self._mDM = mDM
         self._g = g_dof
         self._p_type = p_type
+        self._bg = StandardCosmology() if background is None else background
 
         if self._p_type not in {"f", "b", "m"}:
             print(
@@ -55,8 +61,8 @@ class Model:
         self._x = x
         self._q = q
 
-        self._f = np.zeros_like(
-            [self._x, self._q], dtype=float
+        self._f = np.zeros(
+            (np.size(self._x), np.size(self._q)), dtype=float
         )  # solution of the fBE - matrix of size Nx*Nq
         self._collision_terms = (
             []
@@ -76,6 +82,11 @@ class Model:
         """ Returns the solution of the fBE """
 
         return self._f
+
+    def getBackground(self):
+        """ Returns the expansion history the model is being solved against """
+
+        return self._bg
 
     def changeGrid(self, x_new: np.array, q_new: np.array) -> None:
         """ Changes the x and q grid for the model """
@@ -147,10 +158,10 @@ class Model:
 
             # as defined by Eq. 9 in 2410.18186
             dfq_x = (
-                gtilda(self._m / x) * (q * dfdq - 2 * fq)
+                self._bg.redshift_coeff(self._m / x) * (q * dfdq - 2 * fq)
                 + q**2
                 * (self._CI(x, q, fq, f_eq) / (2 * self._g * eq))
-                / H_t(self._m / x)
+                / self._bg.H_t(self._m / x)
             ) / x
 
             return dfq_x
@@ -198,7 +209,16 @@ class Model:
                 )
                 last_log_time = current_time
 
-            return Rate(x, Y) * (H_t(self._m / x) * s_ent(self._m / x) * x) ** (-1)
+            """
+            Y = n/s is comoving only while s a^3 is conserved. Once a decaying field
+            sources the bath the second term dilutes it; it is identically zero on the
+            standard cosmology, so this costs nothing there.
+            """
+            return (
+                Rate(x, Y)
+                * (self._bg.H_t(self._m / x) * s_ent(self._m / x) * x) ** (-1)
+                - Y * self._bg.dln_sa3_dlnx(self._m / x) / x
+            )
 
         logging.info("Starting solve_nBE...")
 
