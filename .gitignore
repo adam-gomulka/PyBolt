@@ -4,3 +4,4 @@ logs/
 scratch/
 *.pkl
 .pytest_cache/
+notebook_cache/
