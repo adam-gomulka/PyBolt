@@ -37,9 +37,27 @@ hy = dof_arr[:, 1] / dof_arr[:, 2]  # h points
 gy_spline = CubicSpline(gx, gy)
 hy_spline = CubicSpline(gx, hy)
 
+"""
+The table stops at log10(T/GeV) = 2.45 (282 GeV) and CubicSpline extrapolates past it
+cubically, which runs away fast: g_rho(1 TeV) comes out at 77 instead of ~107, and
+g_rho(1e16 GeV) at -7e4. Above the table we therefore clamp to the asymptotic plateau,
+where every SM species is relativistic. Inside the table nothing changes.
+
+The table also stops at 1 MeV from below, where the same cubic extrapolation applies.
+That is left alone deliberately: it would move existing results, and BBN puts
+reheating above roughly 5 MeV, so runs do not go there.
+"""
+LOG10_T_TABLE_MAX = gx[-1]  # log10(T/GeV) of the last tabulated point
+G_PLATEAU = 106.75  # all SM dof relativistic
+
+
 # Functions for density and entropy dofs
-g_rho = lambda T: gy_spline(np.log10(T))
-h_s = lambda T: hy_spline(np.log10(T))
+g_rho = lambda T: np.where(
+    np.log10(T) > LOG10_T_TABLE_MAX, G_PLATEAU, gy_spline(np.log10(T))
+)
+h_s = lambda T: np.where(
+    np.log10(T) > LOG10_T_TABLE_MAX, G_PLATEAU, hy_spline(np.log10(T))
+)
 
 # gx_probe = np.logspace(np.log10(gx[0]),np.log10(gx[-1]),100)
 gx_probe = np.linspace(gx[0], gx[-1], 100)
@@ -49,12 +67,14 @@ hslog = CubicSpline(dof_arr[:, 0] - 3, np.log10(hy))
 
 # Derivative of the spline
 dloghdlogT = hslog.derivative()
-# Function for gtilda
-gtilda = lambda T: (1 / 3) * dloghdlogT(np.log10(T))
+# Function for gtilda. Constant h_s above the table means the derivative vanishes there.
+gtilda = lambda T: np.where(
+    np.log10(T) > LOG10_T_TABLE_MAX, 0.0, (1 / 3) * dloghdlogT(np.log10(T))
+)
 
 # ============== Cosmological quantities ==============
 
-# Hubble parameter
+# Hubble parameter in radiation domination
 H = lambda T: T**2 / (MPL / np.sqrt(8 * np.pi**3.0 * g_rho(T) / 90))  # GeV
 
 # Reduced Hubble parameter \tilde{H}
