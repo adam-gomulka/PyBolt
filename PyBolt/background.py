@@ -32,7 +32,7 @@ from .cosmology import (
 class Background:
     """An expansion history.
 
-    Subclasses supply ``H`` and ``w``. Everything the solvers actually call is
+    Subclasses supply H and w. Everything the solvers actually call is
     derived from those two here, so a new cosmology cannot make the Jacobian and the
     redshift term disagree with each other.
 
@@ -94,29 +94,29 @@ W_REHEATING = 3.0 / 8.0
 
 
 class SuddenDecayReheating(Background):
-    """Early matter domination ending in a hard switch to radiation at ``T_rh``.
+    """Early matter domination ending in a hard switch to radiation at T_rh.
 
-    Above ``T_rh`` the decaying field dominates and the bath sits on the reheating
-    attractor ``rho_R = (2/5) Gamma rho_phi / H``, which with
-    ``H^2 = 8 pi rho / (3 MPL^2)`` gives
+    Above T_rh the decaying field dominates and the bath sits on the reheating
+    attractor rho_R = (2/5) Gamma rho_phi / H, which with
+    H^2 = 8 pi rho / (3 MPL^2) gives
 
         H(T) = 2 pi^3 g_rho(T) T^4 / (9 Gamma MPL^2)
 
-    depending on ``Gamma`` alone -- the initial inflaton density sets only ``T_max``,
-    not the curve. Below ``T_rh`` this is exactly ``StandardCosmology``.
+    depending on Gamma alone -- the initial inflaton density sets only T_max,
+    not the curve. Below T_rh this is exactly ``StandardCosmology``.
 
-    ``Gamma = gamma_factor * H_rad(T_rh)`` is a convention rather than a matching
-    condition, so ``H`` steps by exactly 5/6 at ``T_rh`` (independent of ``T_rh`` and
-    of ``g_rho``). That step is deliberate: comparing it against
+    Gamma = gamma_factor * H_rad(T_rh) is a convention rather than a matching
+    condition, so H steps by exactly 5/6 at T_rh (independent of T_rh and
+    of g_rho). That step is deliberate: comparing it against
     ``PerturbativeReheating``, which resolves the transition properly, is what tells
-    you whether the cheap background is good enough for a given question.
+    whether the cheap background is good enough for a given question.
 
     Parameters
     ----------
     T_rh: float
         Reheat temperature [GeV].
     gamma_factor: float
-        Sets ``Gamma`` in units of the radiation-domination Hubble rate at ``T_rh``.
+        Sets Gamma in units of the radiation-domination Hubble rate at T_rh.
     """
 
     def __init__(self, T_rh: float, gamma_factor: float = 3.0):
@@ -150,38 +150,28 @@ class SuddenDecayReheating(Background):
 class PerturbativeReheating(Background):
     """Reheating solved as a two-fluid system rather than matched by hand.
 
-    Integrates, in ``ln a``,
+    Integrates, in ln a,
 
         d rho_phi / dlna = -3 rho_phi - Gamma rho_phi / H
         d s       / dlna = -3 s       + Gamma rho_phi / (H T)
         H = sqrt(8 pi (rho_phi + rho_R(T)) / 3) / MPL
 
-    and splines ``H`` and ``w`` against ``T`` recovered from ``s``. Unlike
-    ``SuddenDecayReheating`` the transition at ``T_rh`` is resolved, so the two
-    together measure the error of the cheap background.
+    and splines H and w against T recovered from s. Unlike
+    SuddenDecayReheating the transition at T_rh is resolved.
 
     The bath is sourced through its *entropy*, not its energy. Decay deposits
-    ``Gamma rho_phi`` into a bath at temperature ``T`` and so produces entropy at
-    ``Gamma rho_phi / T``. Evolving ``rho_R`` as ``-4 rho_R + source`` instead would
-    assume ``g_rho`` is constant, which fails wherever a species is going
-    non-relativistic -- most importantly across the QCD transition, which is exactly
-    where a low ``T_rh`` puts the interesting physics.
+    Gamma rho_phi into a bath at temperature T and so produces entropy at
+    Gamma rho_phi / T. Evolving rho_R as -4 rho_R + source instead would
+    assume g_rho is constant.
 
-    Both limits then come out exact rather than approximate. With the source off,
-    ``s a^3`` is constant and ``w -> 1/(1+gtilda)``, which is ``StandardCosmology``
-    including every dof feature. Deep in reheating ``s ~ a^(-9/8)`` and ``w -> 3/8``.
-
-    Integration starts *on* the reheating attractor at ``start_factor * T_start``
-    rather than from ``rho_R = 0``, which skips the rising-temperature branch
-    entirely -- that branch would make ``x = m/T`` non-monotonic and is out of scope.
-    Because the attractor is fixed by ``Gamma`` alone, ``start_factor`` moves where
-    the integration comes in without moving the resulting ``H(T)``.
+    Integration starts *on* the reheating attractor at start_factor * T_start
+    rather than from rho_R = 0, which skips the rising-temperature branch
+    entirely -- that branch would make x = m/T non-monotonic and is out of scope.
+    Because the attractor is fixed by Gamma alone, start_factor moves where
+    the integration comes in without moving the resulting H(T).
 
     It stops once the source term has died away, and below that hands over to
-    ``StandardCosmology``. The handover is continuous in both ``H`` and ``w`` by
-    construction: with the inflaton gone ``sqrt(8 pi rho_R/3)/MPL`` is exactly
-    ``H_rad``, and ``s a^3 = const`` is exactly what ``StandardCosmology`` assumes.
-    It is a shortcut past integrating a dead source, not a change of model.
+    StandardCosmology. 
 
     Parameters
     ----------
@@ -190,9 +180,9 @@ class PerturbativeReheating(Background):
     T_start: float
         Temperature at which the Boltzmann run begins [GeV].
     gamma_factor: float
-        ``Gamma`` in units of the radiation-domination Hubble rate at ``T_rh``.
+        Gamma in units of the radiation-domination Hubble rate at T_rh.
     start_factor: float
-        How far above ``T_start`` to begin integrating. Affects only coverage.
+        How far above T_start to begin integrating. Affects only coverage.
     """
 
     # Hand over to the standard cosmology once entropy injection is this small
@@ -204,8 +194,9 @@ class PerturbativeReheating(Background):
 
     def __init__(
         self,
-        T_rh: float,
-        T_start: float,
+        T_rh: float, #GeV
+        T_start: float, #GeV
+        T_max: float = None, #GeV
         gamma_factor: float = 3.0,
         start_factor: float = 10.0,
     ):
@@ -217,13 +208,27 @@ class PerturbativeReheating(Background):
                 "the reheating era".format(T_start, T_rh)
             )
 
+        if T_max is None:
+            # Not given: assume the attractor reaches as high as we care to come in.
+            # Harmless only because H(T) on the falling branch is fixed by Gamma and
+            # does not depend on the initial inflaton density.
+            T_max = start_factor * T_start
+        elif T_max < T_start:
+            raise ValueError(
+                "T_start ({:.4e} GeV) is above T_max ({:.4e} GeV): the universe never "
+                "reached that temperature in this scenario, so there is nothing to "
+                "start from. Lower the starting temperature or raise T_max.".format(
+                    T_start, T_max)
+            )
+
         self._T_rh = T_rh
         self._T_start = T_start
+        self._T_max = T_max
         self._gamma_factor = gamma_factor
         self._Gamma = gamma_factor * H_radiation(T_rh)
         self._standard = StandardCosmology()
 
-        self._integrate(start_factor * T_start)
+        self._integrate(T_max)
 
     # -- construction ---------------------------------------------------------
 
@@ -334,6 +339,16 @@ class PerturbativeReheating(Background):
         """Decay width of the field driving reheating. [GeV]"""
 
         return self._Gamma
+
+    @property
+    def T_max(self):
+        """Highest temperature the bath ever reached. [GeV]
+
+        Set by the initial inflaton density, so it is an input of the scenario in its
+        own right rather than something T_rh determines. A run cannot start above it.
+        """
+
+        return self._T_max
 
     @property
     def T_range(self):

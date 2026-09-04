@@ -105,6 +105,12 @@ def parse_args(argv=None):
     parser.add_argument("--t-rh", type=float, default=None,
                         help="Reheat temperature in GeV, required by --bg sudden "
                              "and --bg reheating. Must be below T_start.")
+    parser.add_argument("--t-max", type=float, default=None,
+                        help="Highest temperature the bath ever reached, in GeV. Set "
+                             "by the initial inflaton density, so it is an input in "
+                             "its own right rather than something --t-rh fixes. The "
+                             "run cannot start above it. Omit to assume the reheating "
+                             "attractor extends as high as the run begins.")
     parser.add_argument("--output", type=str, default=None,
                         help="Name for the combined output file (serial mode)")
     parser.add_argument("--f_min", type=float, default=1e7,
@@ -166,9 +172,18 @@ def build_background(args, T_start):
                 args.t_rh, T_start)
         )
 
+    # T_max bounds where any run may begin, whichever tier models the era, so the
+    # check belongs here rather than inside one background.
+    if args.t_max is not None and args.t_max < T_start:
+        raise ValueError(
+            "the run starts at {:.4e} GeV, above --t-max ({:.4e} GeV): the universe "
+            "never reached that temperature in this scenario. Lower --ratio or raise "
+            "--t-max.".format(T_start, args.t_max)
+        )
+
     if args.bg == "sudden":
         return SuddenDecayReheating(T_rh=args.t_rh)
-    return PerturbativeReheating(T_rh=args.t_rh, T_start=T_start)
+    return PerturbativeReheating(T_rh=args.t_rh, T_start=T_start, T_max=args.t_max)
 
 
 def build_config(args):
@@ -424,6 +439,8 @@ def build_meta(args, config):
     if args.bg != "standard":
         meta["background"] = args.bg
         meta["background_T_rh"] = args.t_rh
+        if args.t_max is not None:
+            meta["background_T_max"] = args.t_max
 
     return meta
 
