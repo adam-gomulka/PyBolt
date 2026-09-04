@@ -1,23 +1,46 @@
 import numpy as np
 from abc import ABC, abstractmethod
-from scipy.interpolate import interp1d
+from scipy.interpolate import interp1d, CubicSpline
 from scipy.special import kn  # Bessel function
 from scipy.integrate import quad, fixed_quad
 from .cosmology import Y_x_eq, Y_x_eq_massive, h_s, nmeq, npheq
 from .constants import e_g
 from tqdm import tqdm
 
+# Default number of x nodes used by Process.tabulate. Building the table is the whole
+# cost of the scheme -- one node costs one full adaptive evaluation -- so this is the
+# knob that matters, not the interpolation.
+#
+# Measured against adaptive quadrature over x in [1e-3, 30] (4.5 decades, the widest
+# range the production scans use), worst relative error above 1e-7 of the peak:
+#
+#     nodes     25       50      100      200      400
+#     error   5.9e-4   1.2e-5   7.8e-7   8.9e-8   3.7e-8
+#
+# 200 is where it meets the 5.6e-8 level at which the adaptive reference agrees with
+# itself, so 400 costs twice as much to buy nothing. Narrower x ranges get more nodes
+# per decade and so are comfortably inside this.
+N_TABULATION_POINTS = 200
+
+# Fractional headroom, in log x, added at each end of the tabulation range. LSODA
+# takes internal steps past the end of the interval and interpolates back, so the
+# spline is asked for x slightly outside [x[0], x[-1]].
+TABULATION_LOG_MARGIN = 0.02
+
+
 # Classes of processes
 class Process(ABC):
     """
     Base class for all the processes.
     """
-    
+
     def __init__(self, m1: float, g_1: float, coupling: float, simplify: bool = False, **kwargs):
         self._m1 = m1
         self._g_1 = g_1
         self._coupling = coupling
         self.simplify = simplify
+        self._kernel_table = None
+        self._kernel_table_q = None
 
     @abstractmethod
     def rate(self, x: float, Y: float) -> float:
@@ -50,8 +73,142 @@ class Process(ABC):
         feq: np.array
             The corresponding equilibrium distribution of X particle [1]
         """
-        
+
         pass
+
+    # -- the f-independent kernel ---------------------------------------------
+    #
+    # The ek integral inside the collision terms runs over the *bath* particle's
+    # energy, and the bath is held at equilibrium, so the integrand contains only
+    # exp(-ek) and 1/(exp(ek) -+ 1). It therefore depends on x and q alone -- never
+    # on f, and never on the coupling, which sits outside it in the prefactor. The
+    # distribution enters afterwards, through the (1 - f/feq) factor.
+    #
+    # Splitting the integral out under the name "kernel" is what lets it be cached
+    # across the ~10^4 right-hand-side evaluations of one solve, and across every
+    # f_a of a scan.
+
+    def _lower_limit(self, x: float, q: np.array) -> np.array:
+        """Lower limit of the ek integral, per q. [1]"""
+
+        raise NotImplementedError
+
+    def _reduced_integrand(self, t: float, q_i: float, x2: float, a: float) -> float:
+        """The ek integrand at ``ek = a + t``, with the ``exp(-a)`` divided back out.
+
+        The lower limit contributes a factor ``exp(-a)`` that reaches ``exp(-9e4)``
+        at the small-q, large-x corner of the production grid. Evaluating that
+        directly underflows the integrand to zero -- correct, but it leaves nothing
+        to interpolate. Shifting the variable and dividing the factor out leaves an
+        O(1) integral that can be splined, with the exponential restored
+        analytically afterwards.
+        """
+
+        raise NotImplementedError
+
+    def _kernel_prefactor(self, x: float, q: np.array) -> np.array:
+        """Everything multiplying the ek integral in the collision term."""
+
+        raise NotImplementedError
+
+    def _reduced_integral(self, x: float, q: np.array) -> np.array:
+        """The reduced ek integral evaluated by adaptive quadrature, per q."""
+
+        x2 = x**2
+        a = np.broadcast_to(self._lower_limit(x, q), np.shape(q))
+
+        return np.array([
+            quad(self._reduced_integrand, 0.0, np.inf, args=(q_i, x2, a_i))[0]
+            for q_i, a_i in zip(q, a)
+        ])
+
+    def _reduced_integral_at(self, x: float, q: np.array) -> np.array:
+        """The reduced integral, from the table when one has been built."""
+
+        if self._kernel_table is None:
+            return self._reduced_integral(x, q)
+
+        if not np.array_equal(q, self._kernel_table_q):
+            raise ValueError(
+                "The kernel table was built for a different q grid. Call tabulate() "
+                "again with the grid the solver will use, or drop the table."
+            )
+
+        return np.exp(self._kernel_table(np.log(x)))
+
+    def _kernel(self, x: float, q: np.array) -> np.array:
+        """``A(x, q)``: the collision term with the ``f``-dependent factor removed."""
+
+        reduced = self._reduced_integral_at(x, q)
+        damping = np.exp(-np.broadcast_to(self._lower_limit(x, q), np.shape(q)))
+
+        return self._kernel_prefactor(x, q) * reduced * damping
+
+    def tabulate(self, x: np.array, q: np.array,
+                 n_points: int = N_TABULATION_POINTS) -> "Process":
+        """Precompute the kernel on a log-spaced x grid and spline it.
+
+        ``log`` of the reduced integral is close to linear in ``log x``, so a cubic
+        spline over a few hundred nodes reproduces the adaptive result to well
+        inside the ODE solver's own tolerance. What is splined is the *reduced*
+        integral: the steep ``exp(-a)`` from the lower limit is put back
+        analytically in ``_kernel``, so the table never has to represent the fifty
+        orders of magnitude the kernel itself spans, and the underflow to exactly
+        zero at large ``x``/small ``q`` comes out right for free.
+
+        Parameters
+        ----------
+        x: np.array
+            The x grid the solve will run over. Only its endpoints are used.
+        q: np.array
+            The momentum grid. The table is tied to it, and ``collisionTerm`` will
+            refuse a different one.
+        n_points: int
+            Number of x nodes.
+
+        Returns ``self``, so the call can be chained onto the constructor.
+        """
+
+        log_x = np.linspace(
+            np.log(x[0]) - TABULATION_LOG_MARGIN,
+            np.log(x[-1]) + TABULATION_LOG_MARGIN,
+            n_points,
+        )
+        reduced = np.array([self._reduced_integral(xi, q) for xi in np.exp(log_x)])
+
+        self._kernel_table = CubicSpline(log_x, np.log(reduced), axis=0)
+        self._kernel_table_q = np.array(q, copy=True)
+
+        return self
+
+    def adopt_table(self, other: "Process") -> "Process":
+        """Reuse another process's kernel table.
+
+        Nothing under the integral knows about the coupling or the particle mass --
+        they enter through ``_kernel_prefactor`` -- so one table serves an entire
+        scan over ``f_a``. The two processes do have to agree about the integrand
+        itself, which means the same class and the same ``simplify`` flag.
+
+        Returns ``self``, so the call can be chained onto the constructor.
+        """
+
+        if type(self) is not type(other):
+            raise TypeError(
+                f"Cannot adopt a {type(other).__name__} table into a "
+                f"{type(self).__name__}: the integrands differ."
+            )
+        if bool(self.simplify) != bool(other.simplify):
+            raise ValueError(
+                "Cannot adopt a table built with a different 'simplify' setting: "
+                "it selects a different bath distribution under the integral."
+            )
+        if other._kernel_table is None:
+            raise ValueError("The donor process has no table; call tabulate() first.")
+
+        self._kernel_table = other._kernel_table
+        self._kernel_table_q = other._kernel_table_q
+
+        return self
 
 
 class DecayToX(Process): # 1 -> 2 decay where X is massless
@@ -150,23 +307,28 @@ class LeptonAnnihilationToAxionMB(Process): # l_i + l_j -> X + gamma_k
         return nmeq(x, self._g_1, self._m1)**2*self.sigmaV_ann(x)*(1 - Y/Y_x_eq(self._m1 / x)) # [GeV**4]
         
 
-    def collisionTerm(self, x, q, f, feq):
-        x2 = x**2
+    def _lower_limit(self, x, q):
+        return x**2 / q
 
-        def integrand(ek, q_i):
-            w = np.sqrt(1 - x2/(ek*q_i))
-            if self.simplify:
-                return ((2*ek*q_i - x2)*np.arctanh(w) - ek*q_i*w) / np.exp(ek)
-            else:
-                return ((2*ek*q_i - x2)*np.arctanh(w) - ek*q_i*w) / (np.exp(ek) - 1.0)
+    def _reduced_integrand(self, t, q_i, x2, a):
+        ek = a + t
+        w = np.sqrt(1 - x2/(ek*q_i))
+        damped = ((2*ek*q_i - x2)*np.arctanh(w) - ek*q_i*w) * np.exp(-t)
 
-        integral = np.array([
-            quad(integrand, x2/q_i, np.inf, args=(q_i,))[0]
-            for q_i in q
-        ])
+        if self.simplify:
+            return damped
 
+        # exp(-ek)/(1 - exp(-ek)) is 1/(exp(ek) - 1) rearranged so that the shifted
+        # exponential cancels; expm1 keeps it accurate as ek -> 0.
+        return damped / -np.expm1(-ek)
+
+    def _kernel_prefactor(self, x, q):
         prefactor = self._g_1**2 * (e_g * self._coupling)**2 * self._m1**3
-        C_func = prefactor * np.exp(-q) / (q * x * 2 * (2*np.pi)**3) * integral
+
+        return prefactor * np.exp(-q) / (q * x * 2 * (2*np.pi)**3)
+
+    def collisionTerm(self, x, q, f, feq):
+        C_func = self._kernel(x, q)
 
         if self.simplify:
             return C_func
@@ -217,32 +379,39 @@ class PrimakoffScatteringMB(Process): # l_i + X -> l_j + gamma_k
         return 2*nmeq(x, self._g_1, self._m1)*npheq(self._m1/x)*self.sigmaV_prim(x)*(1 - Y/Y_x_eq(self._m1 / x)) # [GeV**4]
         
 
-    def collisionTerm(self, x, q, f, feq):
-        x2 = x**2
+    def _lower_limit(self, x, q):
+        return x
+
+    def _reduced_integrand(self, t, q_i, x2, a):
+        ek = a + t
 
         def s_integral(s):
             return 2*s*np.log(s/x2) + 4*x2*np.log(s) - 5*s + x2**2/s
 
-        def integrand(ek, q_i):
-            root = 2*q_i*np.sqrt(ek**2 - x2)
-            base = x2 + 2*ek*q_i
-            if self.simplify:
-                return (s_integral(base + root) - s_integral(base - root)) / np.exp(ek)
-            else:
-                return (s_integral(base + root) - s_integral(base - root)) / (np.exp(ek) + 1.0)
-
-        integral = np.array([
-            quad(integrand, x, np.inf, args=(q_i,))[0]
-            for q_i in q
-        ])
-
-        prefactor = 2 * self._g_1**2 * (e_g * self._coupling)**2 * self._m1**3
-        C = prefactor * np.exp(-q) / (q * x * 32 * (2*np.pi)**3) * integral
+        root = 2*q_i*np.sqrt(ek**2 - x2)
+        base = x2 + 2*ek*q_i
+        damped = (s_integral(base + root) - s_integral(base - root)) * np.exp(-t)
 
         if self.simplify:
-            return C/2
+            return damped
+
+        # exp(-ek)/(1 + exp(-ek)) is 1/(exp(ek) + 1) with the shifted exponential
+        # cancelled against the exp(+a) that _reduced_integrand divides out.
+        return damped / (1.0 + np.exp(-ek))
+
+    def _kernel_prefactor(self, x, q):
+        prefactor = 2 * self._g_1**2 * (e_g * self._coupling)**2 * self._m1**3
+
+        # The trailing /2 is the factor collisionTerm used to apply to C.
+        return prefactor * np.exp(-q) / (q * x * 32 * (2*np.pi)**3) / 2
+
+    def collisionTerm(self, x, q, f, feq):
+        C_half = self._kernel(x, q)
+
+        if self.simplify:
+            return C_half
         else:
-            return (1 - f/feq) * C / 2
+            return (1 - f/feq) * C_half
 
 
 

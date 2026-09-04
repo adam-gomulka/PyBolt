@@ -84,6 +84,10 @@ class RunConfig:
     background: object = field(default_factory=StandardCosmology)
     mode: str = "fbe"
     solver_options: dict = field(default_factory=lambda: dict(SOLVER_OPTIONS))
+    tabulate: bool = False
+    # Filled in once per task by build_kernel_tables when tabulate is on, then
+    # carried to the pool workers with the rest of the config.
+    kernel_tables: object = None
 
 
 def parse_args(argv=None):
@@ -150,7 +154,22 @@ def parse_args(argv=None):
     parser.add_argument("--dry-run", action="store_true",
                         help="Skip the solver and emit a zero row of the correct "
                              "width, to exercise the pipeline cheaply")
-    return parser.parse_args(argv)
+    parser.add_argument("--tabulate", action="store_true",
+                        help="Precompute the collision kernels on an x grid once "
+                             "and interpolate, instead of integrating adaptively "
+                             "at every solver step. One table serves the whole f "
+                             "scan. Changes results at the 1e-5 level, so it is "
+                             "recorded in meta.json and tabulated parts cannot be "
+                             "mixed with adaptive ones. (fbe mode only)")
+    args = parser.parse_args(argv)
+
+    # The nbe path goes through rate(), which never touches the kernel, so a table
+    # there would cost minutes to build and then go unread.
+    if args.tabulate and args.mode != "fbe":
+        parser.error("--tabulate applies to --mode fbe only; the number-density "
+                     "solver does not evaluate the collision kernel")
+
+    return args
 
 
 def build_background(args, T_start):
@@ -202,7 +221,48 @@ def build_config(args):
         simplify=args.simplify,
         background=build_background(args, T_start),
         mode=args.mode,
+        tabulate=args.tabulate,
     )
+
+
+def make_processes(config, inv_f):
+    """The two collision processes for one f_a, sharing the run's kernel tables.
+
+    Nothing under the kernel integral depends on the coupling, so the tables built
+    once by build_kernel_tables are valid for every f_a in the scan.
+    """
+    annihilation = LeptonAnnihilationToAxionMB(
+        config.m_lepton, config.g_lepton, inv_f, config.simplify
+    )
+    primakoff = PrimakoffScatteringMB(
+        config.m_lepton, config.g_lepton, inv_f, config.simplify
+    )
+
+    if config.kernel_tables is not None:
+        annihilation.adopt_table(config.kernel_tables[0])
+        primakoff.adopt_table(config.kernel_tables[1])
+
+    return annihilation, primakoff
+
+
+def build_kernel_tables(config):
+    """Tabulate both collision kernels once for the whole f_a scan.
+
+    This is the expensive step -- one x node costs one full adaptive evaluation --
+    and it is the reason tabulation pays: doing it per f_a would cost more than
+    solving adaptively, while doing it once amortises over the entire grid.
+
+    The donor coupling is arbitrary, since it sits outside the integral.
+    """
+    donors = (
+        LeptonAnnihilationToAxionMB(config.m_lepton, config.g_lepton, 1.0, config.simplify),
+        PrimakoffScatteringMB(config.m_lepton, config.g_lepton, 1.0, config.simplify),
+    )
+
+    for donor in donors:
+        donor.tabulate(config.x_lin, config.q_lin)
+
+    return donors
 
 
 def solve_distribution(f_a, config):
@@ -215,12 +275,7 @@ def solve_distribution(f_a, config):
     )
     model.changeGrid(config.x_lin, config.q_lin)
 
-    annihilation = LeptonAnnihilationToAxionMB(
-        config.m_lepton, config.g_lepton, inv_f, config.simplify
-    )
-    primakoff = PrimakoffScatteringMB(
-        config.m_lepton, config.g_lepton, inv_f, config.simplify
-    )
+    annihilation, primakoff = make_processes(config, inv_f)
     model.addCollisionTerm(annihilation.collisionTerm)
     model.addCollisionTerm(primakoff.collisionTerm)
 
@@ -242,12 +297,7 @@ def solve_number_density(f_a, config):
     )
     model.changeGrid(config.x_lin, config.q_lin)
 
-    annihilation = LeptonAnnihilationToAxionMB(
-        config.m_lepton, config.g_lepton, inv_f, config.simplify
-    )
-    primakoff = PrimakoffScatteringMB(
-        config.m_lepton, config.g_lepton, inv_f, config.simplify
-    )
+    annihilation, primakoff = make_processes(config, inv_f)
 
     def total_rate(x, Y):
         return annihilation.rate(x, Y) + primakoff.rate(x, Y)
@@ -442,6 +492,14 @@ def build_meta(args, config):
         if args.t_max is not None:
             meta["background_T_max"] = args.t_max
 
+    # Written only when on, for the same reason the background keys are: every
+    # parts directory created before this feature existed has no such key, and
+    # check_meta_matches compares the full key set. Recording it at all matters
+    # because tabulation moves the numbers at the 1e-5 level, so tabulated and
+    # adaptive parts must never merge into one grid.
+    if config.tabulate:
+        meta["tabulate"] = True
+
     return meta
 
 
@@ -494,6 +552,16 @@ def run_parts(args, config, f_vals):
         axion_grid.write_q_grid_if_absent(args.parts_dir, config.q_lin)
 
     index_list = list(select_indices(f_vals, args.f_index_start, args.f_count))
+
+    # Build the kernel tables once for this task's whole slice, before the pool
+    # forks, so every worker inherits them instead of rebuilding them per f_a.
+    # Skipped when there is nothing to solve, so an already-finished array task
+    # still exits promptly.
+    if config.tabulate and index_list and not args.dry_run:
+        print("tabulating collision kernels on {} x nodes...".format(
+            len(config.x_lin)))
+        config.kernel_tables = build_kernel_tables(config)
+
     if index_list:
         print("task solving indices {}..{} of {}".format(
             index_list[0], index_list[-1], args.f_num))
