@@ -146,3 +146,51 @@ def run_paths(channel, study, base="distributions", **knobs):
         "OUTPUT_PATH": directory + "/" + filename,
         "RUN_ARGS": run_args(**knobs),
     }
+
+
+def _shell_quote(value):
+    """Single-quote a value for safe eval by bash."""
+
+    return "'" + str(value).replace("'", "'\\''") + "'"
+
+
+def main(argv=None):
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Print the canonical paths and solver flags for one run."
+    )
+    parser.add_argument("--shell", action="store_true",
+                        help="Print assignments for the shell to eval")
+    parser.add_argument("--channel", default="combined",
+                        choices=sorted(CHANNEL_SUBDIRS))
+    parser.add_argument("--study", required=True)
+    parser.add_argument("--base", default="distributions")
+    parser.add_argument("--lepton", required=True)
+    parser.add_argument("--ratio", required=True)
+    parser.add_argument("--bg", default="standard")
+    parser.add_argument("--t-rh", default=None)
+    parser.add_argument("--t-max", default=None)
+    parser.add_argument("--simplify", action="store_true")
+    parser.add_argument("--tabulate", action="store_true")
+    parser.add_argument("--mode", default="fbe")
+    args = parser.parse_args(argv)
+
+    try:
+        paths = run_paths(
+            args.channel, args.study, base=args.base,
+            lepton=args.lepton, ratio=args.ratio, bg=args.bg,
+            t_rh=args.t_rh, t_max=args.t_max,
+            simplify=args.simplify, tabulate=args.tabulate, mode=args.mode,
+        )
+    except ValueError as error:
+        parser.error(str(error))
+
+    for key in ("RUN_NAME", "RUN_DIR", "PARTS_DIR", "OUTPUT_PATH", "RUN_ARGS"):
+        print("{}={}".format(key, _shell_quote(paths[key])))
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
