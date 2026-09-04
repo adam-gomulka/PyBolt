@@ -51,6 +51,13 @@ def run_name(lepton, ratio, bg="standard", t_rh=None, t_max=None,
     if mode not in MODES:
         raise ValueError("mode must be one of {}, got {!r}".format(MODES, mode))
 
+    if tabulate and mode != "fbe":
+        raise ValueError(
+            "tabulate applies to mode 'fbe' only; it caches the collision "
+            "kernel, and the {!r} number-density path evaluates rate() "
+            "instead, so the table would be built and never read".format(mode)
+        )
+
     if bg == "standard":
         if t_rh is not None or t_max is not None:
             raise ValueError(
