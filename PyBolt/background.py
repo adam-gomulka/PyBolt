@@ -356,11 +356,15 @@ class PerturbativeReheating(Background):
 
         return (self._T_lo, self._T_hi)
 
+    # The solver builds its grid as x = m/T and then asks for m/x, which round-trips a
+    # few ulps away. A run starting exactly at T_max must not fail on that.
+    _RANGE_TOLERANCE = 1e-9
+
     def _check_range(self, T):
-        if np.any(np.asarray(T) > self._T_hi):
+        if np.any(np.asarray(T) > self._T_hi * (1.0 + self._RANGE_TOLERANCE)):
             raise ValueError(
                 "temperature above the integrated range (max {:.4e} GeV); raise "
-                "start_factor to cover it".format(self._T_hi)
+                "T_max to cover it".format(self._T_hi)
             )
 
     def H(self, T):
