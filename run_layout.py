@@ -76,3 +76,61 @@ def run_name(lepton, ratio, bg="standard", t_rh=None, t_max=None,
         parts.append(mode)
 
     return "_".join(parts)
+
+
+# The existing top-level split under distributions/.
+CHANNEL_SUBDIRS = {
+    "combined": "Combined",
+    "primakoff": "Primakoff",
+    "annihilation": "Annihilation",
+}
+
+# fBE_LFC.py names its output by mode; the directory already carries the mode.
+MODE_FILENAMES = {"fbe": "fa.dat", "nbe": "Y.dat"}
+
+
+def run_args(bg="standard", t_rh=None, t_max=None, simplify=False,
+             tabulate=False, **_ignored):
+    """The fBE_LFC.py flags these knobs imply.
+
+    Emitted from the same call as the paths, so the flags handed to the solver
+    and the directory it writes into are generated from one argument set and
+    cannot describe different runs.
+
+    simplify is always stated explicitly because fBE_LFC.py uses
+    BooleanOptionalAction, and the shell has always passed one or the other.
+    """
+
+    args = ["--simplify" if simplify else "--no-simplify"]
+
+    if tabulate:
+        args.append("--tabulate")
+
+    if bg != "standard":
+        args.extend(["--bg", bg, "--t-rh", format_number(t_rh)])
+        if t_max is not None:
+            args.extend(["--t-max", format_number(t_max)])
+
+    return " ".join(args)
+
+
+def run_paths(channel, study, base="distributions", **knobs):
+    """Every path and flag string one run needs, from one argument set."""
+
+    if channel not in CHANNEL_SUBDIRS:
+        raise ValueError(
+            "channel must be one of {}, got {!r}".format(
+                tuple(CHANNEL_SUBDIRS), channel)
+        )
+
+    name = run_name(**knobs)
+    directory = "/".join([base, CHANNEL_SUBDIRS[channel], study, name])
+    filename = MODE_FILENAMES[knobs.get("mode", "fbe")]
+
+    return {
+        "RUN_NAME": name,
+        "RUN_DIR": directory,
+        "PARTS_DIR": directory + "/parts",
+        "OUTPUT_PATH": directory + "/" + filename,
+        "RUN_ARGS": run_args(**knobs),
+    }
