@@ -90,7 +90,7 @@ MODE_FILENAMES = {"fbe": "fa.dat", "nbe": "Y.dat"}
 
 
 def run_args(bg="standard", t_rh=None, t_max=None, simplify=False,
-             tabulate=False, **_ignored):
+             tabulate=False, mode="fbe", **_ignored):
     """The fBE_LFC.py flags these knobs imply.
 
     Emitted from the same call as the paths, so the flags handed to the solver
@@ -99,6 +99,8 @@ def run_args(bg="standard", t_rh=None, t_max=None, simplify=False,
 
     simplify is always stated explicitly because fBE_LFC.py uses
     BooleanOptionalAction, and the shell has always passed one or the other.
+    mode, like bg, is only emitted when it differs from fBE_LFC.py's own
+    default ("fbe"), so the common case stays short.
     """
 
     args = ["--simplify" if simplify else "--no-simplify"]
@@ -110,6 +112,9 @@ def run_args(bg="standard", t_rh=None, t_max=None, simplify=False,
         args.extend(["--bg", bg, "--t-rh", format_number(t_rh)])
         if t_max is not None:
             args.extend(["--t-max", format_number(t_max)])
+
+    if mode != "fbe":
+        args.extend(["--mode", mode])
 
     return " ".join(args)
 
