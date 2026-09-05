@@ -203,3 +203,27 @@ def read_meta(parts_dir):
         )
     with open(path) as handle:
         return json.load(handle)
+
+
+def read_run(run_dir):
+    """Load one run directory: (meta, f_a, f, q).
+
+    A convenience for notebook work. The path is still constructed by hand --
+    this only saves re-deriving the q grid and re-opening the sidecar.
+
+    ``q`` is None for nbe runs, which have no momentum axis; ``f`` is then the
+    single Y column.
+    """
+
+    meta_file = os.path.join(run_dir, META_FILENAME)
+    with open(meta_file) as handle:
+        meta = json.load(handle)
+
+    filename = "Y.dat" if meta.get("mode") == "nbe" else "fa.dat"
+    data_path = os.path.join(run_dir, filename)
+
+    table = np.loadtxt(data_path, delimiter=",", ndmin=2)
+    f_a = table[:, 0]
+    values = table[:, 1:]
+
+    return meta, f_a, values, read_q_grid_from_file(data_path)
