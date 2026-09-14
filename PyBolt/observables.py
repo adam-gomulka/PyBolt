@@ -16,8 +16,3 @@ def delta_neff(q, F, T_final, T_nu=T_NU):
     ratio = 15.0 / (2.0 * np.pi**4) * np.trapezoid(np.asarray(q) * np.asarray(F), q)
     dilution = (h_s(T_final) / h_s(T_nu)) ** (-4.0 / 3.0)
     return float(8.0 / 7.0 * ratio * dilution)
-
-
-def m_a_eV(f_a):
-    """QCD axion mass, m_a = 0.57 eV (1e7 GeV / f_a) (2211.03799 Sec. II)."""
-    return 0.57 * 1e7 / f_a

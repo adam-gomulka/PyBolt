@@ -17,7 +17,7 @@ import numpy as np
 from PyBolt import axion_grid
 from PyBolt import boltzmann_solver as bz
 from PyBolt.background import PerturbativeReheating, StandardCosmology, SuddenDecayReheating
-from PyBolt.observables import T_NU, delta_neff, m_a_eV
+from PyBolt.observables import T_NU, delta_neff
 from PyBolt.pion_amplitudes import M_PI
 from PyBolt.pion_rate import PionRateTable
 from PyBolt.processes import PionScatteringToAxion
@@ -155,7 +155,7 @@ def main(argv=None):
             if args.mode == "fbe":
                 F = solve_distribution(f_a, table, x, q, background)
                 handle.write(axion_grid.format_row(f_a, F))
-                dneff_rows.append((f_a, m_a_eV(f_a), delta_neff(q, F, T_end)))
+                dneff_rows.append((f_a, delta_neff(q, F, T_end)))
             else:
                 Y = solve_number_density(f_a, table, x, background)
                 handle.write(axion_grid.format_row(f_a, [Y]))
@@ -163,7 +163,7 @@ def main(argv=None):
 
     if args.mode == "fbe":
         np.savetxt(stem + "_dneff.dat", np.array(dneff_rows), delimiter=",",
-                   header="f_a, m_a[eV], dNeff", fmt="%.5e")
+                   header="f_a [GeV], dNeff", fmt="%.5e")
     return 0
 
 
