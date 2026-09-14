@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Hot axions from a pi <-> pi pi between T_c = 150 MeV and 30 MeV (arXiv:2211.03799).
+"""Hot axions from a pi <-> pi pi below T_c = 150 MeV (arXiv:2211.03799).
+
+Runs end at 15 MeV, not the paper's 30 MeV. For f_a <~ 1e6 GeV the axions are still
+coupled at 30 MeV and stopping there treats them as decoupled before muon
+annihilation; by 15 MeV Gamma/H < 1e-6 even at f_a = 1e5 GeV. For f_a >~ 1e7 GeV the
+two agree to 1e-4.
 
 Zero axion abundance at T_c ("Pions only"). One rate table serves the whole f_a scan.
 
@@ -23,7 +28,10 @@ from PyBolt.pion_rate import PionRateTable
 from PyBolt.processes import PionScatteringToAxion
 
 T_START = 0.150  # GeV, T_c
-T_END = 0.030  # GeV
+T_END = 0.015  # GeV, just above the rate table's lowest temperature (13.8 MeV)
+# Energy-weighted Gamma/H above which the axions are not decoupled where the pion rate
+# stops. The rate falls by ~10 per e-fold there, so 0.1 bounds the missed change at ~1%.
+COUPLED_WARNING = 0.1
 N_X = 500
 M_DM = 1.0e-10  # GeV, massless for production purposes
 G_X = 1.0
@@ -78,6 +86,22 @@ def run_window(background):
             "({:.3g} MeV); delta_neff does not cover that. Raise T_rh.".format(
                 injection_end * 1e3, T_NU * 1e3))
     return T_start, T_end
+
+
+def coupling_where_rate_stops(f_a, table, background, T_end, q):
+    """Energy-weighted Gamma/H where production ends: at T_end, or at the table's lowest
+    temperature if the run goes below it (the rate is zero there).
+
+    Gamma_E = int q^3 f_BE Gamma dq / int q^3 f_BE dq with Gamma = Gamma^> (1 - e^{-q})
+    the relaxation rate towards equilibrium (2211.03799 App. A), so f_BE Gamma = Gamma^<.
+    It is how fast the energy density, and so Delta N_eff, still changes. The high-q
+    tail stays coupled longer but carries no energy, so a plain max over q misleads.
+    """
+    T_table_min = M_PI / 10.0 ** table.log10_x[-1]
+    T_stop = max(T_end, T_table_min)
+    gamma_less = PionScatteringToAxion(table, f_a).gamma_destruction(M_PI / T_stop, q) * np.exp(-q)
+    gamma_energy = np.trapezoid(q**3 * gamma_less, q) / np.trapezoid(q**3 / np.expm1(q), q)
+    return float(gamma_energy / float(background.H(T_stop))), T_stop
 
 
 def x_grid(n_x, T_start=T_START, T_end=T_END):
@@ -141,6 +165,13 @@ def main(argv=None):
     x = x_grid(args.n_x, T_start, T_end)
     q = np.linspace(args.q_min, args.q_max, args.q_num)
     f_vals = axion_grid.f_grid(args.f_min, args.f_max, args.f_num)
+
+    # The smallest f_a is the most strongly coupled one.
+    ratio, T_stop = coupling_where_rate_stops(f_vals.min(), table, background, T_end, q)
+    if ratio > COUPLED_WARNING:
+        print("WARNING: at f_a = {:.3g} GeV the axions are still coupled (Gamma/H = {:.2g}) "
+              "where pion production stops, T = {:.3g} MeV. Delta N_eff for such f_a is "
+              "a lower bound.".format(f_vals.min(), ratio, T_stop * 1e3), file=sys.stderr)
 
     stem, _ = os.path.splitext(args.output)
     dneff_rows = []
