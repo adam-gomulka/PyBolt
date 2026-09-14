@@ -2,6 +2,10 @@
 """Hot axions from a pi <-> pi pi between T_c = 150 MeV and 30 MeV (arXiv:2211.03799).
 
 Zero axion abundance at T_c ("Pions only"). One rate table serves the whole f_a scan.
+
+Under a reheating background (--bg sudden|reheating) the run starts at
+min(T_c, T_max) and ends only once entropy injection is over, so that the
+g_{*S} dilution in delta_neff is the whole story from there on.
 """
 
 import argparse
@@ -12,12 +16,13 @@ import numpy as np
 
 from PyBolt import axion_grid
 from PyBolt import boltzmann_solver as bz
-from PyBolt.observables import delta_neff, m_a_eV
+from PyBolt.background import PerturbativeReheating, StandardCosmology, SuddenDecayReheating
+from PyBolt.observables import T_NU, delta_neff, m_a_eV
 from PyBolt.pion_amplitudes import M_PI
 from PyBolt.pion_rate import PionRateTable
 from PyBolt.processes import PionScatteringToAxion
 
-T_START = 0.150  # GeV
+T_START = 0.150  # GeV, T_c
 T_END = 0.030  # GeV
 N_X = 500
 M_DM = 1.0e-10  # GeV, massless for production purposes
@@ -25,22 +30,69 @@ G_X = 1.0
 PARTICLE_TYPE = "b"
 DEFAULT_TABLE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data",
                              "pion_rate_pheno.npz")
+BACKGROUNDS = ("standard", "sudden", "reheating")
 SOLVER_OPTIONS = {"method": "LSODA", "rtol": 1e-6, "atol": 1e-24, "lband": 2, "uband": 2}
 
 
-def x_grid(n_x):
-    return np.linspace(M_PI / T_START, M_PI / T_END, n_x)
+def build_background(bg="standard", T_rh=None, T_max=None):
+    """The expansion history, temperatures in GeV.
+
+    PerturbativeReheating is integrated from T_START (or T_max, if lower) upwards.
+    """
+    if bg == "standard":
+        return StandardCosmology()
+    if bg not in BACKGROUNDS:
+        raise ValueError("bg must be one of {}, got {!r}".format(BACKGROUNDS, bg))
+    if T_rh is None:
+        raise ValueError("--bg {} needs --t-rh".format(bg))
+    if bg == "sudden":
+        return SuddenDecayReheating(T_rh=T_rh)
+    T_start = T_START if T_max is None else min(T_START, T_max)
+    return PerturbativeReheating(T_rh=T_rh, T_start=T_start, T_max=T_max)
 
 
-def _model(x, q):
-    model = bz.Model(M_PI, M_DM, G_X, PARTICLE_TYPE)
+def run_window(background):
+    """(T_start, T_end) in GeV for a run against ``background``.
+
+    Starts at T_c, or at T_max when the bath never got that hot. Ends at T_END or,
+    under reheating, where entropy injection has stopped (T_rh for the sudden model,
+    the handover to StandardCosmology for the integrated one, about T_rh/3).
+    """
+    if isinstance(background, StandardCosmology):
+        return T_START, T_END
+
+    if isinstance(background, SuddenDecayReheating):
+        T_rh, T_start, injection_end = background.T_rh, T_START, background.T_rh
+    else:
+        T_rh = None
+        T_start = min(T_START, background.T_max)
+        injection_end = background.T_range[0]
+
+    if T_rh is not None and T_rh >= T_START:
+        raise ValueError("T_rh = {:.3g} GeV is not below T_c; use --bg standard".format(T_rh))
+
+    T_end = min(T_END, injection_end)
+    if T_end <= T_NU:
+        raise ValueError(
+            "entropy injection lasts until T = {:.3g} MeV, past neutrino decoupling "
+            "({:.3g} MeV); delta_neff does not cover that. Raise T_rh.".format(
+                injection_end * 1e3, T_NU * 1e3))
+    return T_start, T_end
+
+
+def x_grid(n_x, T_start=T_START, T_end=T_END):
+    return np.linspace(M_PI / T_start, M_PI / T_end, n_x)
+
+
+def _model(x, q, background=None):
+    model = bz.Model(M_PI, M_DM, G_X, PARTICLE_TYPE, background=background)
     model.changeGrid(x, q)
     return model
 
 
-def solve_distribution(f_a, table, x, q):
-    """Final F = q^2 f at T_END."""
-    model = _model(x, q)
+def solve_distribution(f_a, table, x, q, background=None):
+    """Final F = q^2 f at the end of the x grid."""
+    model = _model(x, q, background)
     model.addCollisionTerm(PionScatteringToAxion(table, f_a).collisionTerm)
     model.solve_fBE(np.zeros(len(q)), dict(SOLVER_OPTIONS))
     F = model.getSolution()[-1, :]
@@ -50,10 +102,10 @@ def solve_distribution(f_a, table, x, q):
     return F
 
 
-def solve_number_density(f_a, table, x):
-    """Final Y = n/s at T_END."""
+def solve_number_density(f_a, table, x, background=None):
+    """Final Y = n/s at the end of the x grid."""
     process = PionScatteringToAxion(table, f_a)
-    Y = _model(x, np.linspace(0.01, 30.0, 10)).solve_nBE(x, process.rate, 0.0)
+    Y = _model(x, np.linspace(0.01, 30.0, 10), background).solve_nBE(x, process.rate, 0.0)
     if Y is None:
         raise RuntimeError("solve_nBE did not converge for f_a={:.5e}".format(f_a))
     return Y[-1]
@@ -70,6 +122,12 @@ def parse_args(argv=None):
     parser.add_argument("--q_max", type=float, default=30.0)
     parser.add_argument("--q_num", type=int, default=250)
     parser.add_argument("--n_x", type=int, default=N_X)
+    parser.add_argument("--bg", choices=BACKGROUNDS, default="standard",
+                        help="expansion history (default: standard)")
+    parser.add_argument("--t-rh", dest="t_rh", type=float, default=None,
+                        help="reheat temperature in GeV, for --bg sudden|reheating")
+    parser.add_argument("--t-max", dest="t_max", type=float, default=None,
+                        help="highest bath temperature in GeV, for --bg reheating")
     parser.add_argument("--output", required=True)
     return parser.parse_args(argv)
 
@@ -77,7 +135,10 @@ def parse_args(argv=None):
 def main(argv=None):
     args = parse_args(argv)
     table = PionRateTable.load(args.table)
-    x = x_grid(args.n_x)
+    background = build_background(args.bg, args.t_rh, args.t_max)
+    T_start, T_end = run_window(background)
+    print("background {}: T = {:.4g} -> {:.4g} MeV".format(args.bg, T_start * 1e3, T_end * 1e3))
+    x = x_grid(args.n_x, T_start, T_end)
     q = np.linspace(args.q_min, args.q_max, args.q_num)
     f_vals = axion_grid.f_grid(args.f_min, args.f_max, args.f_num)
 
@@ -92,11 +153,12 @@ def main(argv=None):
 
         for f_a in f_vals:
             if args.mode == "fbe":
-                F = solve_distribution(f_a, table, x, q)
+                F = solve_distribution(f_a, table, x, q, background)
                 handle.write(axion_grid.format_row(f_a, F))
-                dneff_rows.append((f_a, m_a_eV(f_a), delta_neff(q, F, T_END)))
+                dneff_rows.append((f_a, m_a_eV(f_a), delta_neff(q, F, T_end)))
             else:
-                handle.write(axion_grid.format_row(f_a, [solve_number_density(f_a, table, x)]))
+                Y = solve_number_density(f_a, table, x, background)
+                handle.write(axion_grid.format_row(f_a, [Y]))
             handle.flush()
 
     if args.mode == "fbe":

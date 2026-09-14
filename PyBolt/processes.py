@@ -400,19 +400,31 @@ class PionScatteringToAxion(Process):  # a + pi <-> pi + pi
         (df/dt)_coll = e^{-q} Gamma^> (1 - f/f_BE),
     and the solver's convention dF/dx = ... + q^2 CI/(2 g_x eps_q H_t x):
         CI = 2 q e^{-q} Gamma^> (1 - F/F_eq).
+
+    Below the table's lowest temperature (x above its largest x) the rates are zero.
+    Runs under a reheating background have to continue there until entropy injection
+    ends, and by then the averaged rate has fallen by more than 1e-4 from T_c.
     """
 
     def __init__(self, table, f_a: float):
         super().__init__(m1=M_PI, g_1=3.0, coupling=1.0 / f_a)
         self._table = table
         self._prefactor = (EPSILON * F_PI * self._coupling / 2.0) ** 2
+        self._x_table_max = 10.0 ** table.log10_x[-1] * (1.0 + table._EDGE_TOLERANCE)
+
+    def _below_table(self, x):
+        return x > self._x_table_max
 
     def gamma_destruction(self, x, q):
         """Gamma^> [GeV] per axion momentum q = k/T."""
+        if self._below_table(x):
+            return np.zeros(np.shape(q))
         return self._prefactor * (self._m1 / x) * self._table(q, x)
 
     def averaged_rate(self, x):
         """Gamma-bar of 2211.03799 eq. (4) [GeV]."""
+        if self._below_table(x):
+            return 0.0
         q = self._table.q_nodes
         return self._prefactor * (self._m1 / x) * thermal_average(q, self._table(q, x), "production")
 
