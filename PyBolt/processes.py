@@ -6,6 +6,9 @@ from scipy.integrate import quad, fixed_quad
 from .cosmology import Y_x_eq, Y_x_eq_massive, h_s, nmeq, npheq
 from .constants import e_g
 from tqdm import tqdm
+from .constants import Zeta3
+from .pion_amplitudes import EPSILON, F_PI, M_PI
+from .pion_rate import thermal_average
 
 # Default number of x nodes in Process.tabulate. Over x in [1e-3, 30] this matches
 # adaptive quadrature to ~1e-7, the accuracy of the quadrature itself.
@@ -384,3 +387,40 @@ class PrimakoffScatteringMB(Process): # l_i + X -> l_j + gamma_k
             return C_half
         else:
             return (1 - f/feq) * C_half
+
+class PionScatteringToAxion(Process):  # a + pi <-> pi + pi
+    """
+    Axion production and absorption in a thermal pion gas below T_c, with the
+    phenomenological (or LO) rate of 2211.03799 read from a PionRateTable.
+
+    Gamma^>(q, x) = (eps f_pi / 2 f_a)^2 T G(q, x). The table already sums over pion
+    isospin states, so g_1 is informational only.
+
+    Collision term, from 2211.03799 eqs. (1)-(2) for a massless axion with g_x = 1:
+        (df/dt)_coll = e^{-q} Gamma^> (1 - f/f_BE),
+    and the solver's convention dF/dx = ... + q^2 CI/(2 g_x eps_q H_t x):
+        CI = 2 q e^{-q} Gamma^> (1 - F/F_eq).
+    """
+
+    def __init__(self, table, f_a: float):
+        super().__init__(m1=M_PI, g_1=3.0, coupling=1.0 / f_a)
+        self._table = table
+        self._prefactor = (EPSILON * F_PI * self._coupling / 2.0) ** 2
+
+    def gamma_destruction(self, x, q):
+        """Gamma^> [GeV] per axion momentum q = k/T."""
+        return self._prefactor * (self._m1 / x) * self._table(q, x)
+
+    def averaged_rate(self, x):
+        """Gamma-bar of 2211.03799 eq. (4) [GeV]."""
+        q = self._table.q_nodes
+        return self._prefactor * (self._m1 / x) * thermal_average(q, self._table(q, x), "production")
+
+    def rate(self, x, Y):
+        """n_eq Gamma-bar (1 - Y/Y_eq): 2211.03799 eq. (A.4) in solve_nBE's convention."""
+        T = self._m1 / x
+        n_eq = Zeta3 * T**3 / np.pi**2
+        return n_eq * self.averaged_rate(x) * (1.0 - Y / Y_x_eq(T))
+
+    def collisionTerm(self, x, q, f, feq):
+        return 2.0 * q * np.exp(-q) * self.gamma_destruction(x, q) * (1.0 - f / feq)
