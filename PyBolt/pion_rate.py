@@ -11,7 +11,10 @@ Labels follow 2211.03799: k axion, k1 incoming pion, k2 outgoing pion at angle t
 to k, k3 = k + k1 - k2 fixed by momentum conservation.
 """
 
+import json
+
 import numpy as np
+from scipy.interpolate import RectBivariateSpline
 
 from .constants import Zeta3
 from .pion_amplitudes import M_PI
@@ -100,3 +103,68 @@ def thermal_average(q, G, weight):
         raise ValueError("weight must be 'absorption' or 'production'")
     integral = np.trapezoid(q**3 * w * np.asarray(G), np.log(q)) / (2.0 * np.pi**2)
     return integral / (Zeta3 / np.pi**2)
+
+
+class PionRateTable:
+    """G(q, x) on a (log10 q, log10 x) grid, interpolated cubically in log G.
+
+    Values are f_a- and eps-independent, so one table serves a whole f_a scan.
+    """
+
+    def __init__(self, log10_q, log10_x, G, sdev=None, meta=None):
+        self.log10_q = np.asarray(log10_q, dtype=float)
+        self.log10_x = np.asarray(log10_x, dtype=float)
+        self.G = np.asarray(G, dtype=float)
+        self.sdev = None if sdev is None else np.asarray(sdev, dtype=float)
+        self.meta = dict(meta or {})
+
+        if self.G.shape != (self.log10_q.size, self.log10_x.size):
+            raise ValueError("G must have shape (len(log10_q), len(log10_x))")
+        if not np.all(self.G > 0.0):
+            raise ValueError("G must be strictly positive; floor it when tabulating")
+
+        # s=0: an interpolating bicubic spline, exact at the nodes.
+        self._spline = RectBivariateSpline(self.log10_q, self.log10_x, np.log(self.G),
+                                           kx=3, ky=3, s=0)
+
+    @property
+    def q_nodes(self):
+        return 10.0**self.log10_q
+
+    # log10(10**a) lands a few ulps off a; snap such points onto the edge rather than
+    # reject them. Anything further out is a genuine request outside the table.
+    _EDGE_TOLERANCE = 1e-9
+
+    def _snap(self, values, axis):
+        lo, hi = axis[0], axis[-1]
+        near = (values > lo - self._EDGE_TOLERANCE) & (values < hi + self._EDGE_TOLERANCE)
+        return np.where(near, np.clip(values, lo, hi), values)
+
+    def __call__(self, q, x):
+        q = np.asarray(q, dtype=float)
+        log_q = self._snap(np.log10(q).ravel(), self.log10_q)
+        log_x = self._snap(np.full(q.size, np.log10(x)), self.log10_x)
+        outside = ((log_q < self.log10_q[0]) | (log_q > self.log10_q[-1])
+                   | (log_x < self.log10_x[0]) | (log_x > self.log10_x[-1]))
+        if np.any(outside):
+            raise ValueError("(q, x) outside the rate table: q in [{:.3g}, {:.3g}], "
+                             "x in [{:.3g}, {:.3g}]".format(*10.0**self.log10_q[[0, -1]],
+                                                          *10.0**self.log10_x[[0, -1]]))
+        return np.exp(self._spline.ev(log_q, log_x)).reshape(q.shape)
+
+    def save(self, path):
+        np.savez(
+            path,
+            log10_q=self.log10_q,
+            log10_x=self.log10_x,
+            G=self.G,
+            sdev=np.array([]) if self.sdev is None else self.sdev,
+            meta=json.dumps(self.meta),
+        )
+
+    @classmethod
+    def load(cls, path):
+        with np.load(path) as data:
+            sdev = data["sdev"] if data["sdev"].size else None
+            return cls(data["log10_q"], data["log10_x"], data["G"], sdev=sdev,
+                       meta=json.loads(str(data["meta"])))
