@@ -2,9 +2,7 @@
 """The naming grammar for run directories.
 
 A run's directory name is a canonical function of its knobs, computed here and
-nowhere else. axion_paths.sh used to rebuild the same name by string
-concatenation in bash, which is why --bg reached fBE_LFC.py but no shell script,
-and why the tree holds both fa_1000.dat and fa_1000.0.dat.
+nowhere else.
 
 STDLIB ONLY. submit_axion.sh calls this on the login node before conda activate,
 so it must run under whatever python3 is on PATH. Importing PyBolt would pull in
@@ -15,7 +13,6 @@ numpy and scipy through PyBolt/__init__.py.
 def format_number(value):
     """A canonical, round-trippable, filename-safe rendering of a number.
 
-    Python's repr is shortest-round-trip, so no precision is invented or lost.
     The trailing '.0' is dropped so that 1000 and 1000.0 cannot name two
     different directories for one run.
     """
@@ -32,41 +29,78 @@ def format_number(value):
 BACKGROUNDS = ("standard", "sudden", "reheating")
 MODES = ("fbe", "nbe")
 
+# The momentum grid. These live here rather than in fBE_LFC.py because a name has
+# to omit a default to stay canonical: --q-num 250 and an unset --q-num are the
+# same run and must not produce two directories. fBE_LFC.py imports them, so
+# there is still one definition.
+DEFAULT_Q_MIN = 1e-2
+DEFAULT_Q_MAX = 20.0
+DEFAULT_Q_NUM = 250
+
 # The tag each non-standard background contributes to a name.
 BACKGROUND_TAGS = {"sudden": "sud", "reheating": "reh"}
 
 
+def _q_overrides(q_min=None, q_max=None, q_num=None):
+    """The momentum-grid settings that differ from the defaults.
+
+    Returns (name, rendered value) pairs, e.g. [("min", "0.05"), ("num", "400")].
+    A value equal to the default is dropped, so passing --q-num 250 explicitly
+    and leaving it unset name the same directory.
+    """
+
+    overrides = []
+
+    for name, value, default in (
+        ("min", q_min, DEFAULT_Q_MIN),
+        ("max", q_max, DEFAULT_Q_MAX),
+        ("num", q_num, DEFAULT_Q_NUM),
+    ):
+        if value is None or float(value) == float(default):
+            continue
+        overrides.append((name, format_number(value)))
+
+    return overrides
+
+
 def run_name(lepton, ratio, bg="standard", t_rh=None, t_max=None,
+             q_min=None, q_max=None, q_num=None,
              simplify=False, tabulate=False, mode="fbe"):
     """The canonical directory name for one run.
 
     Ordered physics, then method, then mode. Defaults contribute nothing, so a
-    plain run of the muon is 'muon_r1000' and stays that way as knobs are added
-    to the pipeline.
+    plain run of the muon is 'muon_r1000'.
     """
 
+    # These messages are worded as command-line flags because this is the only
+    # place the rules live: submit_axion.sh sources axion_paths.sh before it
+    # submits anything, so what is raised here is what a shell user reads.
     if bg not in BACKGROUNDS:
         raise ValueError(
-            "bg must be one of {}, got {!r}".format(BACKGROUNDS, bg))
+            "--bg must be one of {}, got {!r}".format(
+                ", ".join(BACKGROUNDS), bg))
     if mode not in MODES:
-        raise ValueError("mode must be one of {}, got {!r}".format(MODES, mode))
+        raise ValueError(
+            "--mode must be one of {}, got {!r}".format(", ".join(MODES), mode))
 
     if tabulate and mode != "fbe":
         raise ValueError(
-            "tabulate applies to mode 'fbe' only; it caches the collision "
-            "kernel, and the {!r} number-density path evaluates rate() "
+            "--tabulate applies to --mode fbe only, got '--mode {}'; it caches "
+            "the collision kernel, and the number-density path evaluates rate() "
             "instead, so the table would be built and never read".format(mode)
         )
 
     if bg == "standard":
         if t_rh is not None or t_max is not None:
             raise ValueError(
-                "t_rh/t_max need bg 'sudden' or 'reheating'; the standard "
-                "cosmology ignores them, so a name carrying them would "
-                "describe a scenario that was not run"
+                "--t-rh-ratio/--t-max-ratio need --bg sudden or --bg reheating; "
+                "the standard cosmology ignores them, so a name carrying them "
+                "would describe a scenario that was not run"
             )
     elif t_rh is None:
-        raise ValueError("bg {!r} requires t_rh".format(bg))
+        raise ValueError(
+            "--bg {} requires --t-rh-ratio (reheat temperature in units of "
+            "the lepton mass)".format(bg))
 
     parts = ["{}_r{}".format(lepton.lower(), format_number(ratio))]
 
@@ -74,6 +108,11 @@ def run_name(lepton, ratio, bg="standard", t_rh=None, t_max=None,
         parts.append("{}{}".format(BACKGROUND_TAGS[bg], format_number(t_rh)))
         if t_max is not None:
             parts.append("Tmax{}".format(format_number(t_max)))
+
+    parts.extend(
+        "q{}{}".format(name, value)
+        for name, value in _q_overrides(q_min, q_max, q_num)
+    )
 
     if simplify:
         parts.append("simp")
@@ -92,33 +131,39 @@ CHANNEL_SUBDIRS = {
     "annihilation": "Annihilation",
 }
 
-# fBE_LFC.py names its output by mode; the directory already carries the mode.
 MODE_FILENAMES = {"fbe": "fa.dat", "nbe": "Y.dat"}
 
 
-def run_args(bg="standard", t_rh=None, t_max=None, simplify=False,
+def run_args(channel="combined", bg="standard", t_rh=None, t_max=None,
+             q_min=None, q_max=None, q_num=None, simplify=False,
              tabulate=False, mode="fbe", **_ignored):
     """The fBE_LFC.py flags these knobs imply.
 
-    Emitted from the same call as the paths, so the flags handed to the solver
-    and the directory it writes into are generated from one argument set and
-    cannot describe different runs.
+    simplify is always stated explicitly because fBE_LFC.py declares it with
+    BooleanOptionalAction. Everything else is emitted only when it differs from
+    fBE_LFC.py's own defaults.
 
-    simplify is always stated explicitly because fBE_LFC.py uses
-    BooleanOptionalAction, and the shell has always passed one or the other.
-    mode, like bg, is only emitted when it differs from fBE_LFC.py's own
-    default ("fbe"), so the common case stays short.
+    The momentum grid is emitted exactly when it also appears in the name, so a
+    directory and the arguments that filled it can never disagree.
     """
 
     args = ["--simplify" if simplify else "--no-simplify"]
+
+    # The channel already picks the top-level directory, so it is not in the run
+    # name, but the solver still has to be told which processes to switch on.
+    if channel != "combined":
+        args.extend(["--channel", channel])
 
     if tabulate:
         args.append("--tabulate")
 
     if bg != "standard":
-        args.extend(["--bg", bg, "--t-rh", format_number(t_rh)])
+        args.extend(["--bg", bg, "--t-rh-ratio", format_number(t_rh)])
         if t_max is not None:
-            args.extend(["--t-max", format_number(t_max)])
+            args.extend(["--t-max-ratio", format_number(t_max)])
+
+    for name, value in _q_overrides(q_min, q_max, q_num):
+        args.extend(["--q_{}".format(name), value])
 
     if mode != "fbe":
         args.extend(["--mode", mode])
@@ -131,8 +176,8 @@ def run_paths(channel, study, base="distributions", **knobs):
 
     if channel not in CHANNEL_SUBDIRS:
         raise ValueError(
-            "channel must be one of {}, got {!r}".format(
-                tuple(CHANNEL_SUBDIRS), channel)
+            "--channel must be one of {}, got {!r}".format(
+                ", ".join(sorted(CHANNEL_SUBDIRS)), channel)
         )
 
     name = run_name(**knobs)
@@ -144,7 +189,9 @@ def run_paths(channel, study, base="distributions", **knobs):
         "RUN_DIR": directory,
         "PARTS_DIR": directory + "/parts",
         "OUTPUT_PATH": directory + "/" + filename,
-        "RUN_ARGS": run_args(**knobs),
+        # channel shapes the arguments but not the name: it is already the
+        # top-level directory, so repeating it in the leaf would say it twice.
+        "RUN_ARGS": run_args(channel=channel, **knobs),
     }
 
 
@@ -169,8 +216,11 @@ def main(argv=None):
     parser.add_argument("--lepton", required=True)
     parser.add_argument("--ratio", required=True)
     parser.add_argument("--bg", default="standard")
-    parser.add_argument("--t-rh", default=None)
-    parser.add_argument("--t-max", default=None)
+    parser.add_argument("--t-rh-ratio", dest="t_rh", default=None)
+    parser.add_argument("--t-max-ratio", dest="t_max", default=None)
+    parser.add_argument("--q-min", default=None)
+    parser.add_argument("--q-max", default=None)
+    parser.add_argument("--q-num", default=None)
     parser.add_argument("--simplify", action="store_true")
     parser.add_argument("--tabulate", action="store_true")
     parser.add_argument("--mode", default="fbe")
@@ -181,6 +231,7 @@ def main(argv=None):
             args.channel, args.study, base=args.base,
             lepton=args.lepton, ratio=args.ratio, bg=args.bg,
             t_rh=args.t_rh, t_max=args.t_max,
+            q_min=args.q_min, q_max=args.q_max, q_num=args.q_num,
             simplify=args.simplify, tabulate=args.tabulate, mode=args.mode,
         )
     except ValueError as error:
