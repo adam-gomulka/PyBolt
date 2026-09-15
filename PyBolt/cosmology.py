@@ -37,16 +37,8 @@ hy = dof_arr[:, 1] / dof_arr[:, 2]  # h points
 gy_spline = CubicSpline(gx, gy)
 hy_spline = CubicSpline(gx, hy)
 
-"""
-The table stops at log10(T/GeV) = 2.45 (282 GeV) and CubicSpline extrapolates past it
-cubically, which runs away fast: g_rho(1 TeV) comes out at 77 instead of ~107, and
-g_rho(1e16 GeV) at -7e4. Above the table we therefore clamp to the asymptotic plateau,
-where every SM species is relativistic. Inside the table nothing changes.
-
-The table also stops at 1 MeV from below, where the same cubic extrapolation applies.
-That is left alone deliberately: it would move existing results, and BBN puts
-reheating above roughly 5 MeV, so runs do not go there.
-"""
+# Above the table (282 GeV) the dofs are clamped to the SM plateau, since cubic
+# extrapolation diverges. Below 1 MeV the splines still extrapolate.
 LOG10_T_TABLE_MAX = gx[-1]  # log10(T/GeV) of the last tabulated point
 G_PLATEAU = 106.75  # all SM dof relativistic
 
@@ -67,7 +59,7 @@ hslog = CubicSpline(dof_arr[:, 0] - 3, np.log10(hy))
 
 # Derivative of the spline
 dloghdlogT = hslog.derivative()
-# Function for gtilda. Constant h_s above the table means the derivative vanishes there.
+# gtilda = (1/3) dln h_s/dln T; zero above the table, where h_s is constant.
 gtilda = lambda T: np.where(
     np.log10(T) > LOG10_T_TABLE_MAX, 0.0, (1 / 3) * dloghdlogT(np.log10(T))
 )

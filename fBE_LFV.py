@@ -39,7 +39,6 @@ def main():
     f_vals = np.logspace(np.log10(args.f_min), np.log10(args.f_max), 100)
     coupling_vals = 1 / f_vals
 
-    # Use the argument passed from the command line
     T_reh_to_mass_ratio = args.ratio
     T_reh = T_reh_to_mass_ratio * m_parent
 
@@ -53,9 +52,8 @@ def main():
     N_x = 1000
     N_q = 400
 
-    # Determine integration bounds based on T_reh
-    xstart = 1e-2 #(m_parent / T_reh)
-    xfin = 20.0 #if xstart < 1 else xstart * 20.0
+    xstart = 1e-2
+    xfin = 20.0
 
     qin = 0.03
     qend = 15.0
@@ -75,11 +73,9 @@ def main():
 
     print(f"Writing results incrementally to {filename}...")
 
-    # Open the file ONCE before the loop starts
     with open(filename, 'w') as file:
-        # Write header
         file.write("# f_a, f(q)\n")
-        file.flush() # Ensure header is written immediately
+        file.flush()
 
         # --- Execution Loop ---
         for inv_f in tqdm.tqdm(coupling_vals, desc="Solving fBE"):
@@ -94,17 +90,11 @@ def main():
 
             f0 = np.zeros(N_q)
             try:
-                # Solve the Boltzmann equation
                 AxionModel[inv_f].solve_fBE(f0, solver_options)
-                
-                # Get the final distribution
                 f_final = AxionModel[inv_f]._f[-1, :]
-                
-                # Prepare the string for writing
+
                 f_a = 1/inv_f
                 data_str = ",".join(map(lambda x: f"{x:.5e}", f_final))
-                
-                # Write to file immediately
                 file.write(f"{f_a:.5e},{data_str}\n")
                 file.flush()
                 

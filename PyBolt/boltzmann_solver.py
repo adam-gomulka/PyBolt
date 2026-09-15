@@ -148,35 +148,19 @@ class Model:
 
             dfdq = np.zeros_like(fq)
 
-            """
-            The q derivative is taken leaning into the direction the distribution is
-            coming from. Momenta slide along the grid at dq/dlnx = -coeff*q, so for
-            coeff > 0 the distribution moves towards small q and the values at a point
-            are set by what used to sit at larger q.
-
-            A centred stencil leans neither way. It leaves the even and odd grid points
-            only weakly coupled, so a sawtooth alternating between them is nearly
-            invisible to it and nothing damps it. That is harmless while coeff is
-            gtilda, at most about 0.3, but under reheating coeff is 5/3 and the
-            sawtooth grows until f goes negative -- and refining the q grid makes it
-            worse rather than better.
-
-            Third-order upwind-biased, stencil {i-1, i, i+1, i+2}. It reaches one point
-            below and two above, so it still fits inside the lband=2, uband=2 the
-            solver is told to expect.
-            """
+            # Third-order upwind-biased derivative. Momenta drift as
+            # dq/dlnx = -coeff*q, so for coeff > 0 information comes from larger q.
+            # A centred stencil lets an odd-even sawtooth grow when coeff is large
+            # (5/3 under reheating). The stencil fits inside lband = uband = 2.
             if coeff >= 0.0:
                 dfdq[1:-2] = (
                     -2.0 * fq[:-3] - 3.0 * fq[1:-2] + 6.0 * fq[2:-1] - fq[3:]
                 ) / (6.0 * dq)
-                # Small q is where the distribution flows out, so no physical
-                # condition is needed: a one-sided derivative off the upwind side does.
+                # Outflow edge: one-sided difference.
                 dfdq[0] = (-3.0 * fq[0] + 4.0 * fq[1] - fq[2]) / (2.0 * dq)
-                # Large q is where it flows in. f is exponentially small there and the
-                # equilibrium form is the best statement available about it.
+                # Inflow edge: assume the equilibrium shape.
                 dfdq[-2:] = (2 / q[-2:] - q[-2:] / eq[-2:]) * fq[-2:]
             else:
-                # Mirror image, for the case the momenta ever slide the other way.
                 dfdq[2:-1] = (
                     fq[:-3] - 6.0 * fq[1:-2] + 3.0 * fq[2:-1] + 2.0 * fq[3:]
                 ) / (6.0 * dq)
@@ -200,8 +184,6 @@ class Model:
         # Solving a system of ODEs for each momentum mode
         fBE_sol = solve_ivp(fBE_RHS, [x[0], x[-1]], f0, t_eval=x, **solver_options)
 
-        # Raised rather than logged: returning would leave self._f at the zeros
-        # changeGrid allocated, and callers would store them as a result.
         if not fBE_sol.success:
             raise RuntimeError(f"solve_fBE integration failed: {fBE_sol.message}")
 
@@ -237,11 +219,8 @@ class Model:
                 )
                 last_log_time = current_time
 
-            """
-            Y = n/s is comoving only while s a^3 is conserved. Once a decaying field
-            sources the bath the second term dilutes it; it is identically zero on the
-            standard cosmology, so this costs nothing there.
-            """
+            # The second term dilutes Y = n/s while entropy is injected; it vanishes
+            # in the standard cosmology.
             return (
                 Rate(x, Y)
                 * (self._bg.H_t(self._m / x) * s_ent(self._m / x) * x) ** (-1)

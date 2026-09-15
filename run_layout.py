@@ -1,21 +1,12 @@
 #!/usr/bin/env python3
-"""The naming grammar for run directories.
+"""Canonical run-directory names and paths, derived from a run's parameters.
 
-A run's directory name is a canonical function of its knobs, computed here and
-nowhere else.
-
-STDLIB ONLY. submit_axion.sh calls this on the login node before conda activate,
-so it must run under whatever python3 is on PATH. Importing PyBolt would pull in
-numpy and scipy through PyBolt/__init__.py.
+Standard library only: it must run before the conda environment is activated.
 """
 
 
 def format_number(value):
-    """A canonical, round-trippable, filename-safe rendering of a number.
-
-    The trailing '.0' is dropped so that 1000 and 1000.0 cannot name two
-    different directories for one run.
-    """
+    """A canonical, filename-safe rendering of a number (1000.0 -> '1000')."""
 
     number = float(value)
     text = repr(number)
@@ -29,10 +20,7 @@ def format_number(value):
 BACKGROUNDS = ("standard", "sudden", "reheating")
 MODES = ("fbe", "nbe")
 
-# The momentum grid. These live here rather than in fBE_LFC.py because a name has
-# to omit a default to stay canonical: --q-num 250 and an unset --q-num are the
-# same run and must not produce two directories. fBE_LFC.py imports them, so
-# there is still one definition.
+# Default momentum grid, shared with fBE_LFC.py.
 DEFAULT_Q_MIN = 1e-2
 DEFAULT_Q_MAX = 20.0
 DEFAULT_Q_NUM = 250
@@ -45,8 +33,6 @@ def _q_overrides(q_min=None, q_max=None, q_num=None):
     """The momentum-grid settings that differ from the defaults.
 
     Returns (name, rendered value) pairs, e.g. [("min", "0.05"), ("num", "400")].
-    A value equal to the default is dropped, so passing --q-num 250 explicitly
-    and leaving it unset name the same directory.
     """
 
     overrides = []
@@ -72,9 +58,7 @@ def run_name(lepton, ratio, bg="standard", t_rh=None, t_max=None,
     plain run of the muon is 'muon_r1000'.
     """
 
-    # These messages are worded as command-line flags because this is the only
-    # place the rules live: submit_axion.sh sources axion_paths.sh before it
-    # submits anything, so what is raised here is what a shell user reads.
+    # Errors name command-line flags because they are shown to shell users.
     if bg not in BACKGROUNDS:
         raise ValueError(
             "--bg must be one of {}, got {!r}".format(
@@ -124,7 +108,7 @@ def run_name(lepton, ratio, bg="standard", t_rh=None, t_max=None,
     return "_".join(parts)
 
 
-# The existing top-level split under distributions/.
+# Top-level directory under distributions/ for each channel.
 CHANNEL_SUBDIRS = {
     "combined": "Combined",
     "primakoff": "Primakoff",
@@ -139,18 +123,11 @@ def run_args(channel="combined", bg="standard", t_rh=None, t_max=None,
              tabulate=False, mode="fbe", **_ignored):
     """The fBE_LFC.py flags these knobs imply.
 
-    simplify is always stated explicitly because fBE_LFC.py declares it with
-    BooleanOptionalAction. Everything else is emitted only when it differs from
-    fBE_LFC.py's own defaults.
-
-    The momentum grid is emitted exactly when it also appears in the name, so a
-    directory and the arguments that filled it can never disagree.
+    --simplify/--no-simplify is always given; other flags only when not default.
     """
 
     args = ["--simplify" if simplify else "--no-simplify"]
 
-    # The channel already picks the top-level directory, so it is not in the run
-    # name, but the solver still has to be told which processes to switch on.
     if channel != "combined":
         args.extend(["--channel", channel])
 
@@ -189,8 +166,6 @@ def run_paths(channel, study, base="distributions", **knobs):
         "RUN_DIR": directory,
         "PARTS_DIR": directory + "/parts",
         "OUTPUT_PATH": directory + "/" + filename,
-        # channel shapes the arguments but not the name: it is already the
-        # top-level directory, so repeating it in the leaf would say it twice.
         "RUN_ARGS": run_args(channel=channel, **knobs),
     }
 

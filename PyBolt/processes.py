@@ -7,22 +7,12 @@ from .cosmology import Y_x_eq, Y_x_eq_massive, h_s, nmeq, npheq
 from .constants import e_g
 from tqdm import tqdm
 
-# Default number of x nodes used by Process.tabulate. One node costs one full
-# adaptive evaluation, so this sets the cost of the scheme.
-#
-# Measured against adaptive quadrature over x in [1e-3, 30] (4.5 decades, the widest
-# range the production scans use), worst relative error above 1e-7 of the peak:
-#
-#     nodes     25       50      100      200      400
-#     error   5.9e-4   1.2e-5   7.8e-7   8.9e-8   3.7e-8
-#
-# The adaptive reference only agrees with itself to 5.6e-8, which 200 nodes already
-# reaches. Narrower x ranges get more nodes per decade.
+# Default number of x nodes in Process.tabulate. Over x in [1e-3, 30] this matches
+# adaptive quadrature to ~1e-7, the accuracy of the quadrature itself.
 N_TABULATION_POINTS = 200
 
-# Fractional headroom, in log x, added at each end of the tabulation range. LSODA
-# takes internal steps past the end of the interval and interpolates back, so the
-# spline is asked for x slightly outside [x[0], x[-1]].
+# Extra range in log x at each end of the table; LSODA steps slightly past the
+# integration interval.
 TABULATION_LOG_MARGIN = 0.02
 
 
@@ -43,7 +33,7 @@ class Process(ABC):
     @abstractmethod
     def rate(self, x: float, Y: float) -> float:
         """
-        The rate of decay that enters the number density Boltzmann equation (with the MB distribution for the decaying particle)
+        The rate that enters the number density Boltzmann equation [GeV**4]
 
         Parameters
         ----------
@@ -58,7 +48,7 @@ class Process(ABC):
     @abstractmethod
     def collisionTerm(self, x: float, q: np.array, f: np.array, feq: np.array) -> np.array:
         """
-        The collision term below is for the production of a (scalar) massless particle in the decay with the mother particle and the other daugther particle being fermions
+        The collision term of particle X that enters the phase-space Boltzmann equation
 
         Parameters
         ----------
@@ -76,14 +66,9 @@ class Process(ABC):
 
     # -- the f-independent kernel ---------------------------------------------
     #
-    # The ek integral inside the collision terms runs over the *bath* particle's
-    # energy, and the bath is held at equilibrium, so the integrand contains only
-    # exp(-ek) and 1/(exp(ek) -+ 1). It depends on x and q alone -- never on f, and
-    # never on the coupling, which sits outside it in the prefactor. The distribution
-    # enters afterwards, through the (1 - f/feq) factor.
-    #
-    # Because of that, the kernel can be cached across the right-hand-side
-    # evaluations of one solve and across every f_a of a scan.
+    # The ek integral runs over the energy of an equilibrium bath particle, so it
+    # depends only on x and q, not on f or the coupling. It can therefore be
+    # tabulated once and reused for every f_a.
 
     def _lower_limit(self, x: float, q: np.array) -> np.array:
         """Lower limit of the ek integral, per q. [1]"""
@@ -91,13 +76,10 @@ class Process(ABC):
         raise NotImplementedError
 
     def _reduced_integrand(self, t: float, q_i: float, x2: float, a: float) -> float:
-        """The ek integrand at ``ek = a + t``, with the ``exp(-a)`` divided back out.
+        """The ek integrand at ``ek = a + t``, with ``exp(-a)`` divided out.
 
-        The lower limit contributes a factor ``exp(-a)`` that reaches ``exp(-9e4)``
-        at the small-q, large-x corner of the production grid, which underflows the
-        integrand to zero and leaves nothing to interpolate. Shifting the variable
-        and dividing the factor out leaves an O(1) integral that can be splined;
-        ``_kernel`` restores the exponential analytically.
+        ``exp(-a)`` underflows at large x and small q; ``_kernel`` multiplies it
+        back in analytically.
         """
 
         raise NotImplementedError
@@ -142,13 +124,9 @@ class Process(ABC):
 
     def tabulate(self, x: np.array, q: np.array,
                  n_points: int = N_TABULATION_POINTS) -> "Process":
-        """Precompute the kernel on a log-spaced x grid and spline it.
+        """Precompute the reduced integral on a log-spaced x grid and spline it.
 
-        ``log`` of the reduced integral is close to linear in ``log x``, so a cubic
-        spline over a few hundred nodes reproduces the adaptive result well inside
-        the ODE solver's own tolerance. What is splined is the *reduced* integral;
-        ``_kernel`` puts the steep ``exp(-a)`` back analytically, so the table never
-        has to represent the fifty orders of magnitude the kernel itself spans.
+        The spline is cubic in (log x, log integral).
 
         Parameters
         ----------
@@ -178,10 +156,8 @@ class Process(ABC):
     def adopt_table(self, other: "Process") -> "Process":
         """Reuse another process's kernel table.
 
-        The coupling and the particle mass enter through ``_kernel_prefactor``, not
-        under the integral, so one table serves an entire scan over ``f_a``. The two
-        processes must agree about the integrand itself: the same class and the same
-        ``simplify`` flag.
+        Both processes must be the same class with the same ``simplify`` flag; the
+        coupling may differ.
 
         Returns ``self``, so the call can be chained onto the constructor.
         """
@@ -264,7 +240,7 @@ def lam_f(x: float, y: float, z: float) -> float:
 
 class LeptonAnnihilationToAxionMB(Process): # l_i + l_j -> X + gamma_k 
     """
-    Annihilation of two leptons into an axion and a photon. Axion (massless) is the particle of interest in this reaction. The leptons are described by a Maxwell-Boltzmann distribution whatever ``simplify`` is, hence "MB". We also assume that the axion number of dof is 1.
+    Annihilation of two leptons into an axion and a photon. Axion (massless) is the particle of interest in this reaction. The leptons are Maxwell-Boltzmann. We also assume that the axion number of dof is 1.
     """
 
     def __init__(self, m1, g_1, coupling, simplify: bool = False):
@@ -278,19 +254,10 @@ class LeptonAnnihilationToAxionMB(Process): # l_i + l_j -> X + gamma_k
         coupling : float
             The coupling constant for this process (C_l/f_a)
         simplify : bool
-            Switches off two corrections to the fBE collision term at once.
-
-            False (default): the photon, whose energy ``ek`` the kernel integrates
-            over, keeps its Bose-Einstein enhancement 1/(1 - exp(-ek)), and the
-            inverse process is kept through the factor (1 - f/f_eq), so the axions
-            relax towards equilibrium.
-
-            True: the photon is treated as Maxwell-Boltzmann and f/f_eq is set to
-            zero, i.e. pure production with no back-reaction. Valid only while the
-            axions are far below equilibrium, f << f_eq.
-
-            Only ``collisionTerm`` is affected. ``rate``, used by the number-density
-            solver, always keeps (1 - Y/Y_eq).
+            Affects ``collisionTerm`` only.
+            False (default): Bose-Einstein photon, 1/(1 - exp(-ek)), and the
+            inverse process through (1 - f/f_eq).
+            True: Maxwell-Boltzmann photon and no inverse process (f << f_eq).
         """
         super().__init__(m1 = m1, g_1 = g_1, coupling = coupling, simplify = simplify)
 
@@ -323,8 +290,7 @@ class LeptonAnnihilationToAxionMB(Process): # l_i + l_j -> X + gamma_k
         if self.simplify:
             return damped
 
-        # exp(-ek)/(1 - exp(-ek)) is 1/(exp(ek) - 1) rearranged so that the shifted
-        # exponential cancels; expm1 keeps it accurate as ek -> 0.
+        # Bose-Einstein factor; expm1 stays accurate as ek -> 0.
         return damped / -np.expm1(-ek)
 
     def _kernel_prefactor(self, x, q):
@@ -343,7 +309,7 @@ class LeptonAnnihilationToAxionMB(Process): # l_i + l_j -> X + gamma_k
 
 class PrimakoffScatteringMB(Process): # l_i + X -> l_j + gamma_k 
     """
-    Primakoff scattering of axion on a lepton. Axion (massless) is the particle of interest in this reaction. The leptons are Maxwell-Boltzmann in the number-density rate; in the fBE collision term, see ``simplify``. We also assume that the axion number of dof is 1.
+    Primakoff scattering of axion on a lepton. Axion (massless) is the particle of interest in this reaction. The leptons are Maxwell-Boltzmann, except as described under ``simplify``. We also assume that the axion number of dof is 1.
     """
 
     def __init__(self, m1, g_1, coupling, simplify: bool = False):
@@ -357,19 +323,10 @@ class PrimakoffScatteringMB(Process): # l_i + X -> l_j + gamma_k
         coupling : float
             The coupling constant for this process (C_l/f_a)
         simplify : bool
-            Switches off two corrections to the fBE collision term at once.
-
-            False (default): the lepton whose energy ``ek`` the kernel integrates
-            over is weighted by its Fermi-Dirac occupation 1/(exp(ek) + 1) instead
-            of exp(-ek), and the inverse process is kept through the factor
-            (1 - f/f_eq), so the axions relax towards equilibrium.
-
-            True: that lepton is treated as Maxwell-Boltzmann and f/f_eq is set to
-            zero, i.e. pure production with no back-reaction. Valid only while the
-            axions are far below equilibrium, f << f_eq.
-
-            Only ``collisionTerm`` is affected. ``rate``, used by the number-density
-            solver, always keeps (1 - Y/Y_eq).
+            Affects ``collisionTerm`` only.
+            False (default): Fermi-Dirac lepton in the ek integral,
+            1/(exp(ek) + 1), and the inverse process through (1 - f/f_eq).
+            True: Maxwell-Boltzmann lepton and no inverse process (f << f_eq).
         """
         super().__init__(m1 = m1, g_1 = g_1, coupling = coupling, simplify = simplify)
 
@@ -411,14 +368,13 @@ class PrimakoffScatteringMB(Process): # l_i + X -> l_j + gamma_k
         if self.simplify:
             return damped
 
-        # exp(-ek)/(1 + exp(-ek)) is 1/(exp(ek) + 1) with the shifted exponential
-        # cancelled against the exp(+a) that _reduced_integrand divides out.
+        # Fermi-Dirac factor.
         return damped / (1.0 + np.exp(-ek))
 
     def _kernel_prefactor(self, x, q):
         prefactor = 2 * self._g_1**2 * (e_g * self._coupling)**2 * self._m1**3
 
-        # The collision term is half the kernel for this process; hence the /2.
+        # The trailing /2: the collision term is half the kernel.
         return prefactor * np.exp(-q) / (q * x * 32 * (2*np.pi)**3) / 2
 
     def collisionTerm(self, x, q, f, feq):

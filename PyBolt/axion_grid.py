@@ -1,9 +1,5 @@
-"""Shared primitives for the parallel generation of axion distribution files.
-
-Both the worker (``fBE_LFC.py``) and the merger (``merge_distributions.py``)
-import from here, so the f grid, the part filenames and the on-disk row format
-are each defined exactly once.
-"""
+"""File formats and helpers for axion distribution runs: the f grid, part files,
+run metadata and the on-disk row format."""
 
 import json
 import os
@@ -21,18 +17,12 @@ INDEX_DIGITS = 5
 META_FILENAME = "meta.json"
 Q_GRID_FILENAME = "q_grid.dat"
 
-# The q grid is written into the .dat as a second comment line, column-aligned
-# with the data rows: field 0 is the label, fields 1..N are the q values sitting
-# above the f(q) values they belong to.
+# Second header line of a .dat: the q values, column-aligned with f(q).
 Q_HEADER_PREFIX = "# q,"
 
 
 def f_grid(f_min, f_max, f_num):
-    """The full grid of axion decay constants for a run.
-
-    Every process recomputes it identically from the same three numbers, so a grid
-    index names one f value everywhere.
-    """
+    """The log-spaced grid of axion decay constants for a run."""
     return np.logspace(np.log10(f_min), np.log10(f_max), f_num)
 
 
@@ -67,8 +57,7 @@ def format_row(f_a, distribution):
 def read_row(path):
     """The single data line of a part file, without its trailing newline.
 
-    Raises ValueError if the file does not hold exactly one non-blank line,
-    which is how a truncated or doubly-written part is caught.
+    Raises ValueError unless the file holds exactly one non-blank line.
     """
     with open(path) as handle:
         lines = [line for line in handle.read().splitlines() if line.strip()]
@@ -92,17 +81,8 @@ def row_width(line):
 def atomic_write_text(path, text):
     """Write ``text`` to ``path`` so no reader ever observes a partial file.
 
-    The temp file is created in the destination directory so the final rename
-    stays within one filesystem, where os.replace is atomic.
-
-    Its name carries a random token because array tasks share a parts directory
-    and write meta.json and q_grid.dat to the same destination at the same time.
-    A fixed temp name makes them stage over one another: the first rename moves
-    the shared file away and every other writer's os.replace fails with ENOENT.
-    Giving each writer its own staging file makes the losers harmless, which is
-    what the "they race harmlessly" claim on write_meta_if_absent needs to be
-    true. The rename itself then decides the winner, and the content is
-    identical either way.
+    Writes to a uniquely named temp file in the same directory, then renames it.
+    The unique name lets concurrent writers target the same path safely.
     """
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
@@ -117,7 +97,6 @@ def atomic_write_text(path, text):
             os.fsync(handle.fileno())
         os.replace(temporary, path)
     except BaseException:
-        # Do not leave staging files behind when the write is interrupted.
         try:
             os.remove(temporary)
         except OSError:
@@ -126,11 +105,7 @@ def atomic_write_text(path, text):
 
 
 def format_grid(values):
-    """One line of comma-separated values, no leading f_a.
-
-    This is the layout ``fit_params.load_data`` expects from its ``q_file``
-    argument: a single row it reads with ``pd.read_csv(..., header=None)``.
-    """
+    """One line of comma-separated values, no leading f_a."""
     return ",".join(VALUE_FORMAT.format(float(value)) for value in values) + "\n"
 
 
@@ -140,15 +115,7 @@ def format_q_header(q_values):
 
 
 def read_q_grid_from_file(path):
-    """The q grid recorded in a merged .dat, or None if it carries none.
-
-    nbe files have no q axis, and files written before the grid was recorded have
-    no q line either.
-
-    Readers that only want the numbers do not need this: every header line starts
-    with '#', which ``np.loadtxt(..., comments='#')`` and
-    ``pd.read_csv(..., comment='#')`` both skip.
-    """
+    """The q grid recorded in a .dat header, or None (e.g. for nbe files)."""
     with open(path) as handle:
         for line in handle:
             if not line.startswith("#"):
@@ -165,11 +132,7 @@ def q_grid_path(parts_dir):
 
 
 def write_q_grid_if_absent(parts_dir, q_values):
-    """Record the q grid the solver used. Returns True if it wrote.
-
-    Written out rather than re-derived from the metadata bounds, so the values
-    shipped next to the data are exactly the ones the solver saw.
-    """
+    """Record the q grid the solver used. Returns True if it wrote."""
     path = q_grid_path(parts_dir)
     if os.path.exists(path):
         return False
@@ -178,10 +141,7 @@ def write_q_grid_if_absent(parts_dir, q_values):
 
 
 def read_q_grid_text(parts_dir):
-    """The recorded q grid line, or None when the run did not record one.
-
-    nbe runs have no q axis in their output, so they record no grid.
-    """
+    """The recorded q grid line, or None (nbe runs record none)."""
     path = q_grid_path(parts_dir)
     if not os.path.exists(path):
         return None
@@ -197,10 +157,7 @@ def meta_path(parts_dir):
 def write_meta_if_absent(parts_dir, meta):
     """Write the run metadata unless it is already there. Returns True if written.
 
-    Array tasks all try this at once, and the exists check does not stop two of
-    them getting through. That is harmless because they build identical content
-    from the same -v environment and atomic_write_text stages each writer's copy
-    under its own temp name, so the losers simply rewrite the same bytes.
+    Concurrent tasks may both write; they write identical content.
     """
     path = meta_path(parts_dir)
     if os.path.exists(path):
@@ -212,8 +169,7 @@ def write_meta_if_absent(parts_dir, meta):
 def read_meta(parts_dir):
     """The run metadata for a parts directory.
 
-    Raises FileNotFoundError if absent -- without it there is no way to know how
-    many rows to expect or what q grid the data sits on.
+    Raises FileNotFoundError if absent.
     """
     path = meta_path(parts_dir)
     if not os.path.exists(path):

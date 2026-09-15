@@ -17,33 +17,26 @@ from PyBolt.background import (
 )
 from PyBolt.processes import LeptonAnnihilationToAxionMB, PrimakoffScatteringMB
 
-# The q-grid defaults live in run_layout because it has to leave a default grid
-# out of a run's name. It is stdlib-only, so importing it here costs nothing.
 from run_layout import DEFAULT_Q_MAX, DEFAULT_Q_MIN, DEFAULT_Q_NUM
 
 try:
     from tqdm import tqdm
-except ImportError:  # the cluster environment does not ship tqdm
+except ImportError:
     def tqdm(iterable, **kwargs):
         return iterable
 
-# Grid and model parameters.  The q grid is set from the command line; the x grid
-# stays fixed, since x_lin is only solve_ivp's t_eval and its size does not affect
-# the result.
+# Grid and model parameters. N_X only sets the output points (t_eval), not accuracy.
 N_X = 500
 X_FIN = 30.0
 M_DM = 1.0e-10   # GeV, not really relevant
 G_X = 1.0        # we default to g_x = 1 as for alps
 PARTICLE_TYPE = "b"
-Y0 = 0.0         # the axion population starts empty, as f0 = 0 does for the fBE
+Y0 = 0.0         # no axions initially
 
 MODES = ("fbe", "nbe")
 BACKGROUNDS = ("standard", "sudden", "reheating")
 
-# Which collision processes each channel switches on. The two single-process
-# channels used to be their own scripts; they are the same solver with one term
-# left out, so they live here and inherit parts mode, the backgrounds,
-# tabulation and nbe rather than each needing its own copy.
+# Collision processes included in each channel.
 CHANNEL_PROCESSES = {
     "combined": (LeptonAnnihilationToAxionMB, PrimakoffScatteringMB),
     "annihilation": (LeptonAnnihilationToAxionMB,),
@@ -140,9 +133,7 @@ def parse_args(argv=None):
                              "than something --t-rh-ratio fixes. The run cannot "
                              "start above it. Omit to assume the reheating "
                              "attractor extends as high as the run begins.")
-    # These took GeV. Renaming rather than aliasing is deliberate: an alias would
-    # reinterpret every existing command as a temperature ~10x smaller for the
-    # muon, with no error and quietly different physics.
+    # Removed flags that took GeV; kept only to give a clear error.
     parser.add_argument("--t-rh", dest="_t_rh_gev", type=float, default=None,
                         help=argparse.SUPPRESS)
     parser.add_argument("--t-max", dest="_t_max_gev", type=float, default=None,
@@ -209,7 +200,6 @@ def parse_args(argv=None):
                                     value / m_lepton)
             )
 
-    # The nbe path goes through rate(), which never touches the kernel.
     if args.tabulate and args.mode != "fbe":
         parser.error("--tabulate applies to --mode fbe only; the number-density "
                      "solver does not evaluate the collision kernel")
@@ -218,14 +208,7 @@ def parse_args(argv=None):
 
 
 def build_background(args, m_lepton, T_start):
-    """The expansion history this run solves against.
-
-    Both reheating tiers take the same T_rh, and therefore the same Gamma.
-
-    The command line states every temperature in units of the lepton mass, so the
-    comparisons below are between plain ratios and the conversion to GeV happens
-    once, here, where the physics classes need it.
-    """
+    """The expansion history for this run. Converts temperature ratios to GeV."""
     if args.bg == "standard":
         return StandardCosmology()
 
@@ -238,7 +221,6 @@ def build_background(args, m_lepton, T_start):
             "background is just the standard one.".format(args.t_rh, args.ratio)
         )
 
-    # T_max bounds where a run may begin under either reheating tier.
     if args.t_max is not None and args.t_max < args.ratio:
         raise ValueError(
             "the run starts at --t-start-ratio {:g}, above --t-max-ratio ({:g}): "
@@ -277,11 +259,7 @@ def build_config(args):
 
 
 def make_processes(config, inv_f):
-    """This channel's collision processes for one f_a, sharing the kernel tables.
-
-    Returns a tuple parallel to CHANNEL_PROCESSES[config.channel], so it lines up
-    with the tables build_kernel_tables produced for the same channel.
-    """
+    """This channel's collision processes for one f_a, using any kernel tables."""
     processes = tuple(
         cls(config.m_lepton, config.g_lepton, inv_f, config.simplify)
         for cls in CHANNEL_PROCESSES[config.channel]
@@ -297,9 +275,7 @@ def make_processes(config, inv_f):
 def build_kernel_tables(config):
     """Tabulate this channel's collision kernels once for the whole f_a scan.
 
-    One x node costs one full adaptive evaluation, so this is the expensive step.
-    The donor coupling is arbitrary, since it sits outside the integral. A
-    single-process channel tabulates only its own kernel, so it pays half.
+    The coupling used here is arbitrary; it does not enter the table.
     """
     donors = tuple(
         cls(config.m_lepton, config.g_lepton, 1.0, config.simplify)
@@ -330,11 +306,7 @@ def solve_distribution(f_a, config):
 
 
 def solve_number_density(f_a, config):
-    """Solve the number-density Boltzmann equation for one f_a.
-
-    Returns a one-element array holding the final comoving abundance Y, so a row is
-    written like an fBE row: "f_a,Y" instead of "f_a,f(q)...".
-    """
+    """Solve the number-density Boltzmann equation for one f_a; returns [Y_final]."""
     inv_f = 1.0 / f_a
 
     model = bz.Model(
@@ -350,8 +322,6 @@ def solve_number_density(f_a, config):
 
     abundance = model.solve_nBE(config.x_lin, total_rate, Y0)
 
-    # solve_nBE returns None instead of raising when the integration fails; the
-    # caller only writes a .fail marker for an exception.
     if abundance is None:
         raise RuntimeError("solve_nBE did not converge for f_a={:.5e}".format(f_a))
 
@@ -366,10 +336,7 @@ def solve_for_mode(f_a, config):
 
 
 def expected_columns(config):
-    """Number of comma-separated fields in one data row, for this run's mode.
-
-    nbe stores a single scalar per f value, fbe the whole final f(q).
-    """
+    """Number of comma-separated fields in one data row, for this run's mode."""
     if config.mode == "nbe":
         return 2
     return 1 + len(config.q_lin)
@@ -420,9 +387,8 @@ def process_index(index, f_a, parts_dir, config, overwrite=False, dry_run=False,
                   solver=None):
     """Solve one grid index into its part file.
 
-    Returns "skipped", "solved" or "failed".  A solver failure writes a .fail
-    marker and is reported, never raised: the array task must survive it, and the
-    merge is the gate.
+    Returns "skipped", "solved" or "failed". A failure writes a .fail marker
+    instead of raising, so the remaining indices still run.
     """
     part_path = os.path.join(parts_dir, axion_grid.part_filename(index))
     fail_path = os.path.join(parts_dir, axion_grid.fail_filename(index))
@@ -451,20 +417,13 @@ def process_index(index, f_a, parts_dir, config, overwrite=False, dry_run=False,
         sys.stderr.flush()
         return "failed"
 
-    # A retry that succeeds must clear the old marker, or the merge report lies.
     if os.path.exists(fail_path):
         os.remove(fail_path)
     return "solved"
 
 
 def pool_context():
-    """A multiprocessing context that is safe when the parent has threads.
-
-    The Linux default is fork, which can deadlock a child that inherits a lock
-    held by another thread of the parent -- and the parent here has imported
-    numpy and scipy.  forkserver is safe; spawn is the portable fallback.  Either
-    costs one process start per worker, which is nothing beside a solve.
-    """
+    """A multiprocessing context that avoids fork, which can deadlock with threads."""
     available = multiprocessing.get_all_start_methods()
     for method in ("forkserver", "spawn"):
         if method in available:
@@ -481,11 +440,7 @@ def _pool_worker(payload):
 
 
 def select_indices(f_vals, start, count):
-    """The grid indices this task is responsible for, clipped to the grid.
-
-    Clipping is what makes the last array task need no special case when f_num is
-    not a multiple of the chunk size.
-    """
+    """The grid indices this task is responsible for, clipped to the grid."""
     begin = min(start, len(f_vals))
     stop = len(f_vals) if count is None else min(begin + count, len(f_vals))
     return range(begin, stop)
@@ -494,19 +449,7 @@ def select_indices(f_vals, start, count):
 def build_meta(args, config):
     """The run metadata written next to the part files.
 
-    Optional keys (the background ones, and "tabulate") are written only when they
-    are in use. check_meta_matches compares the full key set, so writing them
-    unconditionally would make every parts directory predating them look like a
-    parameter mismatch and refuse to resume.
-
-    "T_start" is where the integration begins, in GeV. Runs written before the
-    backgrounds existed spell it "T_reh"; check_meta_matches translates that so
-    they still resume.
-
-    The reheat temperature is recorded twice, as the ratio that was typed and as
-    the GeV it works out to. Runs predating the unit change stored GeV under
-    "background_T_rh", which no longer appears, so they refuse to resume instead
-    of being reread in the wrong units.
+    Optional keys (channel, background, tabulate) appear only when not default.
     """
     meta = {
         "mode": config.mode,
@@ -535,26 +478,18 @@ def build_meta(args, config):
         "solver_options": dict(config.solver_options),
     }
 
-    # Written only when it is not the default, like the background keys: every
-    # parts directory predating the channel selector is a combined run, and an
-    # unconditional key would make all of them read as a mismatch.
     if args.channel != "combined":
         meta["channel"] = args.channel
 
     if args.bg != "standard":
         meta["background"] = args.bg
-        # Both the input and the temperature it works out to. The "_ratio" names
-        # are new: runs predating the unit change stored GeV under
-        # "background_T_rh", so the key set differs and check_meta_matches refuses
-        # to resume into one rather than reading 0.1 GeV as 0.1 lepton masses.
         meta["background_T_rh_ratio"] = args.t_rh
         meta["background_T_rh_GeV"] = args.t_rh * config.m_lepton
         if args.t_max is not None:
             meta["background_T_max_ratio"] = args.t_max
             meta["background_T_max_GeV"] = args.t_max * config.m_lepton
 
-    # Recorded because tabulation moves the numbers at the 1e-5 level: tabulated and
-    # adaptive parts must never merge into one grid.
+    # Tabulation changes results at the 1e-5 level, so it is part of the run identity.
     if config.tabulate:
         meta["tabulate"] = True
 
@@ -566,19 +501,13 @@ class ParameterMismatch(Exception):
 
 
 def check_meta_matches(parts_dir, meta):
-    """Refuse to add parts to a directory built with other parameters.
-
-    ``meta.json`` is written once and never updated, so without this a rerun with a
-    changed f range or q grid would leave stale metadata describing the old run.
-    """
+    """Refuse to add parts to a directory built with other parameters."""
     try:
         stored = axion_grid.read_meta(parts_dir)
     except FileNotFoundError:
         return
 
-    # "T_reh" was this key's name before the background models made a reheat
-    # temperature a separate thing. Translating it here means a parts directory
-    # written under the old name still resumes instead of reading as a mismatch.
+    # Older metadata names T_start "T_reh".
     if "T_reh" in stored and "T_start" not in stored:
         stored = dict(stored)
         stored["T_start"] = stored.pop("T_reh")
@@ -609,14 +538,12 @@ def run_parts(args, config, f_vals):
     check_meta_matches(args.parts_dir, meta)
     axion_grid.write_meta_if_absent(args.parts_dir, meta)
 
-    # Only fbe output has a q axis; an nbe row is a single Y.
     if config.mode == "fbe":
         axion_grid.write_q_grid_if_absent(args.parts_dir, config.q_lin)
 
     index_list = list(select_indices(f_vals, args.f_index_start, args.f_count))
 
-    # Built before the pool forks, so every worker inherits the tables instead of
-    # rebuilding them per f_a.
+    # Built once and passed to every worker.
     if config.tabulate and index_list and not args.dry_run:
         print("tabulating collision kernels on {} x nodes...".format(
             len(config.x_lin)))
@@ -677,7 +604,6 @@ def main(argv=None):
         try:
             run_parts(args, config, f_vals)
         except ParameterMismatch as error:
-            # A task-level error, not a per-index one: exit non-zero.
             print("ERROR: " + str(error), file=sys.stderr)
             return 2
     else:

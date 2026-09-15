@@ -1,16 +1,10 @@
 """Pluggable expansion histories.
 
-The Boltzmann solvers need three things from the background, and they are not
-independent: the dt -> dx Jacobian, the coefficient of the momentum-redshift term in
-the fBE, and (once entropy is injected) the rate at which comoving entropy grows.
-All three follow from a single quantity,
+A background supplies ``H(T)`` and ``w(T) = -dlnT/dlna``. Everything the solvers
+need (the dt -> dx Jacobian, the momentum-redshift coefficient and the growth of
+comoving entropy) follows from these two.
 
-    w(T) = -dlnT / dlna
-
-so a background is defined by supplying ``H`` and ``w`` and nothing else.
-
-Setting the entropy-conserving value ``w = 1/(1 + gtilda)`` recovers the standard
-radiation-dominated cosmology exactly; that is ``StandardCosmology``.
+``w = 1/(1 + gtilda)`` conserves entropy and gives ``StandardCosmology``.
 """
 
 import numpy as np
@@ -44,9 +38,8 @@ def dln_g_rho_dln_T(T):
 class Background:
     """An expansion history.
 
-    Subclasses supply H and w. Everything the solvers call is derived from those two
-    here, so a new cosmology cannot make the Jacobian and the redshift term disagree
-    with each other. Subclasses do not override the derived quantities.
+    Subclasses supply H and w; the derived quantities below should not be
+    overridden, so that they stay consistent with each other.
     """
 
     def H(self, T):
@@ -96,18 +89,14 @@ class StandardCosmology(Background):
 
 
 def w_reheating(T):
-    """``-dlnT/dlna`` while the bath is being replenished by the decaying field.
+    """``-dlnT/dlna`` while the decaying field replenishes the bath.
 
-    The inflaton dominates and behaves like matter, rho_phi ~ a^-3, so H ~ a^-3/2. The
-    bath settles where injection balances dilution, rho_R ~ Gamma rho_phi / H ~ a^-3/2.
-    Writing rho_R = (pi^2/30) g_rho(T) T^4 and differentiating,
+    On the reheating attractor rho_R ~ Gamma rho_phi / H ~ a^-3/2. With
+    rho_R = (pi^2/30) g_rho(T) T^4 this gives
 
         (4 + dln g_rho/dln T) dlnT/dlna = -3/2
 
-    The 4 is the exponent on T^4. With g_rho held fixed the second term drops out and
-    this is the familiar 3/8 -- but wherever species are leaving the bath, g_rho falls
-    with T, the denominator grows, and the plasma cools more slowly than 3/8 would say.
-    At the QCD transition w reaches about 0.25, a third below 3/8.
+    i.e. w = 3/8 for constant g_rho, dropping to about 0.25 at the QCD transition.
     """
 
     return 1.5 / (4.0 + dln_g_rho_dln_T(T))
@@ -122,12 +111,12 @@ class SuddenDecayReheating(Background):
 
         H(T) = 2 pi^3 g_rho(T) T^4 / (9 Gamma MPL^2)
 
-    depending on Gamma alone -- the initial inflaton density sets only T_max,
-    not the curve. Below T_rh this is exactly ``StandardCosmology``.
+    independent of the initial inflaton density. Below T_rh this is
+    ``StandardCosmology``.
 
-    Gamma = gamma_factor * H_rad(T_rh) is a convention rather than a matching
-    condition, so H steps by exactly 5/6 at T_rh, independent of T_rh and of g_rho.
-    ``PerturbativeReheating`` resolves the same transition without the step.
+    With Gamma = gamma_factor * H_rad(T_rh) and the default gamma_factor = 3, H
+    jumps by a factor 5/6 at T_rh. ``PerturbativeReheating`` resolves the
+    transition smoothly.
 
     Parameters
     ----------
@@ -166,7 +155,7 @@ class SuddenDecayReheating(Background):
 
 
 class PerturbativeReheating(Background):
-    """Reheating solved as a two-fluid system rather than matched by hand.
+    """Reheating integrated as a two-fluid system.
 
     Integrates, in ln a,
 
@@ -174,21 +163,12 @@ class PerturbativeReheating(Background):
         d s       / dlna = -3 s       + Gamma rho_phi / (H T)
         H = sqrt(8 pi (rho_phi + rho_R(T)) / 3) / MPL
 
-    and splines H and w against T recovered from s. Unlike
-    SuddenDecayReheating the transition at T_rh is resolved.
+    and splines H and w against T recovered from s. The bath is sourced through
+    its entropy, which stays valid when g_rho varies.
 
-    The bath is sourced through its *entropy*, not its energy: decay deposits
-    Gamma rho_phi into a bath at temperature T and so produces entropy at
-    Gamma rho_phi / T. Evolving rho_R as -4 rho_R + source instead would assume
-    g_rho is constant.
-
-    Integration starts *on* the reheating attractor at start_factor * T_start
-    rather than from rho_R = 0, so the rising-temperature branch is skipped; that
-    branch would make x = m/T non-monotonic. The attractor is fixed by Gamma alone,
-    so start_factor moves where the integration comes in without moving H(T).
-
-    It stops once the source term has died away, and below that hands over to
-    StandardCosmology.
+    Integration starts on the reheating attractor at T_max, skipping the phase in
+    which T rises (x = m/T must be monotonic). It stops once the source is
+    negligible; below that the background is ``StandardCosmology``.
 
     Parameters
     ----------
@@ -196,14 +176,16 @@ class PerturbativeReheating(Background):
         Reheat temperature [GeV], defining ``Gamma = gamma_factor * H_rad(T_rh)``.
     T_start: float
         Temperature at which the Boltzmann run begins [GeV].
+    T_max: float, optional
+        Highest temperature the bath reached [GeV]. Defaults to
+        start_factor * T_start.
     gamma_factor: float
         Gamma in units of the radiation-domination Hubble rate at T_rh.
     start_factor: float
-        How far above T_start to begin integrating. Affects only coverage.
+        Sets the default T_max.
     """
 
-    # Hand over to the standard cosmology once entropy injection is this small
-    # compared with the -3s dilution it is competing against.
+    # Stop integrating once the entropy source is this fraction of the 3s dilution.
     SOURCE_FLOOR = 1e-6
 
     _LNA_MAX = 200.0
@@ -226,8 +208,7 @@ class PerturbativeReheating(Background):
             )
 
         if T_max is None:
-            # Assume the attractor reaches as high as the integration comes in. Safe
-            # because H(T) on the falling branch is fixed by Gamma alone.
+            # H(T) on the attractor depends only on Gamma, so this choice is harmless.
             T_max = start_factor * T_start
         elif T_max < T_start:
             raise ValueError(
@@ -257,11 +238,7 @@ class PerturbativeReheating(Background):
 
     @staticmethod
     def _T_of_entropy(s):
-        """Invert s = h_s(T) 4 pi^2 T^3 / 90 by fixed-point iteration.
-
-        h_s varies slowly with T and is flat above the table, so a handful of passes
-        converges. Seeded with the plateau value.
-        """
+        """Invert s = h_s(T) 4 pi^2 T^3 / 90 by fixed-point iteration."""
         T = (90.0 * s / (4.0 * np.pi**2 * G_PLATEAU)) ** (1.0 / 3.0)
         for _ in range(12):
             T = (90.0 * s / (4.0 * np.pi**2 * h_s(T))) ** (1.0 / 3.0)
@@ -272,8 +249,7 @@ class PerturbativeReheating(Background):
         return np.sqrt(8.0 * np.pi * (rho_phi + rho_R) / 3.0) / MPL
 
     def _integrate(self, T_hi):
-        # Start on the attractor: H is set by the (dominant) inflaton, and the bath
-        # carries the rho_R that the attractor implies at this temperature.
+        # Initial state on the attractor.
         H_hi = self._attractor_H(T_hi)
         rho_R_hi = self._rho_R_of_T(T_hi)
         rho_tot_hi = 3.0 * MPL**2 * H_hi**2 / (8.0 * np.pi)
@@ -333,14 +309,12 @@ class PerturbativeReheating(Background):
         rho_R = self._rho_R_of_T(T)
         H = self._hubble(rho_phi, rho_R)
 
-        # w = -dlnT/dlna, from dln(s)/dlna and s ~ h_s(T) T^3, so that
-        # dln s/dlna = 3 (1 + gtilda) dlnT/dlna. With the source off this is exactly
-        # 1/(1+gtilda); deep in reheating s ~ a^(-9/8) and it is exactly 3/8.
+        # s ~ h_s(T) T^3 gives dln s/dlna = -3 (1 + gtilda) w.
         entropy_source = self._Gamma * rho_phi / (H * T)
         dln_s_dlna = -3.0 + entropy_source / s
         w = -dln_s_dlna / (3.0 * (1.0 + gtilda(T)))
 
-        # T falls monotonically on this branch; splines need an increasing abscissa.
+        # T decreases with a; splines need an increasing abscissa.
         order = np.argsort(T)
         logT = np.log(T[order])
         self._log_H_spline = CubicSpline(logT, np.log(H[order]))
@@ -358,11 +332,7 @@ class PerturbativeReheating(Background):
 
     @property
     def T_max(self):
-        """Highest temperature the bath ever reached. [GeV]
-
-        Set by the initial inflaton density, not by T_rh, so it is an input of the
-        scenario in its own right. A run cannot start above it.
-        """
+        """Highest temperature the bath reached; a run cannot start above it. [GeV]"""
 
         return self._T_max
 
@@ -372,8 +342,7 @@ class PerturbativeReheating(Background):
 
         return (self._T_lo, self._T_hi)
 
-    # The solver builds its grid as x = m/T and then asks for m/x, which round-trips a
-    # few ulps away. A run starting exactly at T_max must not fail on that.
+    # Absorbs round-off in T = m/(m/T) for a run starting exactly at T_max.
     _RANGE_TOLERANCE = 1e-9
 
     def _check_range(self, T):
