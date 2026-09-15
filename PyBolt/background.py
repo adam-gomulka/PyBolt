@@ -10,8 +10,7 @@ All three follow from a single quantity,
 so a background is defined by supplying ``H`` and ``w`` and nothing else.
 
 Setting the entropy-conserving value ``w = 1/(1 + gtilda)`` recovers the standard
-radiation-dominated cosmology exactly, which is what ``StandardCosmology`` does and
-what ``tests/test_background.py`` pins down.
+radiation-dominated cosmology exactly; that is ``StandardCosmology``.
 """
 
 import numpy as np
@@ -22,23 +21,32 @@ from .constants import MPL
 from .cosmology import (
     G_PLATEAU,
     H as H_radiation,
+    LOG10_T_TABLE_MAX,
     g_rho,
     gtilda,
+    gy_spline,
     h_s,
     s_ent,
 )
+
+_dg_rho_dlog10T = gy_spline.derivative()
+
+
+def dln_g_rho_dln_T(T):
+    """``dln g_rho / dln T``. Zero above the table, where g_rho is clamped flat."""
+
+    log10T = np.log10(T)
+    inside = _dg_rho_dlog10T(log10T) / (g_rho(T) * np.log(10.0))
+
+    return np.where(log10T > LOG10_T_TABLE_MAX, 0.0, inside)
 
 
 class Background:
     """An expansion history.
 
-    Subclasses supply H and w. Everything the solvers actually call is
-    derived from those two here, so a new cosmology cannot make the Jacobian and the
-    redshift term disagree with each other.
-
-    The derived quantities are deliberately *not* overridden by subclasses, even
-    where a closed form is available: running the generic path on a case with a known
-    answer is what tests that the generic path is right.
+    Subclasses supply H and w. Everything the solvers call is derived from those two
+    here, so a new cosmology cannot make the Jacobian and the redshift term disagree
+    with each other. Subclasses do not override the derived quantities.
     """
 
     def H(self, T):
@@ -71,8 +79,7 @@ class Background:
     def dln_sa3_dlnx(self, T):
         """Growth rate of the comoving entropy ``s a^3`` per unit ``ln x``. [1]
 
-        Zero whenever entropy is conserved, so it costs nothing on a standard
-        cosmology and only bites once a decaying field is sourcing the bath.
+        Zero whenever entropy is conserved.
         """
 
         return 3.0 / self.w(T) - 3.0 - 3.0 * gtilda(T)
@@ -88,9 +95,22 @@ class StandardCosmology(Background):
         return 1.0 / (1.0 + gtilda(T))
 
 
-# w during perturbative reheating: the bath is replenished as fast as it redshifts,
-# so T ~ a^(-3/8) instead of a^(-1).
-W_REHEATING = 3.0 / 8.0
+def w_reheating(T):
+    """``-dlnT/dlna`` while the bath is being replenished by the decaying field.
+
+    The inflaton dominates and behaves like matter, rho_phi ~ a^-3, so H ~ a^-3/2. The
+    bath settles where injection balances dilution, rho_R ~ Gamma rho_phi / H ~ a^-3/2.
+    Writing rho_R = (pi^2/30) g_rho(T) T^4 and differentiating,
+
+        (4 + dln g_rho/dln T) dlnT/dlna = -3/2
+
+    The 4 is the exponent on T^4. With g_rho held fixed the second term drops out and
+    this is the familiar 3/8 -- but wherever species are leaving the bath, g_rho falls
+    with T, the denominator grows, and the plasma cools more slowly than 3/8 would say.
+    At the QCD transition w reaches about 0.25, a third below 3/8.
+    """
+
+    return 1.5 / (4.0 + dln_g_rho_dln_T(T))
 
 
 class SuddenDecayReheating(Background):
@@ -106,10 +126,8 @@ class SuddenDecayReheating(Background):
     not the curve. Below T_rh this is exactly ``StandardCosmology``.
 
     Gamma = gamma_factor * H_rad(T_rh) is a convention rather than a matching
-    condition, so H steps by exactly 5/6 at T_rh (independent of T_rh and
-    of g_rho). That step is deliberate: comparing it against
-    ``PerturbativeReheating``, which resolves the transition properly, is what tells
-    whether the cheap background is good enough for a given question.
+    condition, so H steps by exactly 5/6 at T_rh, independent of T_rh and of g_rho.
+    ``PerturbativeReheating`` resolves the same transition without the step.
 
     Parameters
     ----------
@@ -144,7 +162,7 @@ class SuddenDecayReheating(Background):
         return np.where(T > self._T_rh, reheating, self._standard.H(T))
 
     def w(self, T):
-        return np.where(T > self._T_rh, W_REHEATING, self._standard.w(T))
+        return np.where(T > self._T_rh, w_reheating(T), self._standard.w(T))
 
 
 class PerturbativeReheating(Background):
@@ -159,19 +177,18 @@ class PerturbativeReheating(Background):
     and splines H and w against T recovered from s. Unlike
     SuddenDecayReheating the transition at T_rh is resolved.
 
-    The bath is sourced through its *entropy*, not its energy. Decay deposits
+    The bath is sourced through its *entropy*, not its energy: decay deposits
     Gamma rho_phi into a bath at temperature T and so produces entropy at
-    Gamma rho_phi / T. Evolving rho_R as -4 rho_R + source instead would
-    assume g_rho is constant.
+    Gamma rho_phi / T. Evolving rho_R as -4 rho_R + source instead would assume
+    g_rho is constant.
 
     Integration starts *on* the reheating attractor at start_factor * T_start
-    rather than from rho_R = 0, which skips the rising-temperature branch
-    entirely -- that branch would make x = m/T non-monotonic and is out of scope.
-    Because the attractor is fixed by Gamma alone, start_factor moves where
-    the integration comes in without moving the resulting H(T).
+    rather than from rho_R = 0, so the rising-temperature branch is skipped; that
+    branch would make x = m/T non-monotonic. The attractor is fixed by Gamma alone,
+    so start_factor moves where the integration comes in without moving H(T).
 
     It stops once the source term has died away, and below that hands over to
-    StandardCosmology. 
+    StandardCosmology.
 
     Parameters
     ----------
@@ -209,9 +226,8 @@ class PerturbativeReheating(Background):
             )
 
         if T_max is None:
-            # Not given: assume the attractor reaches as high as we care to come in.
-            # Harmless only because H(T) on the falling branch is fixed by Gamma and
-            # does not depend on the initial inflaton density.
+            # Assume the attractor reaches as high as the integration comes in. Safe
+            # because H(T) on the falling branch is fixed by Gamma alone.
             T_max = start_factor * T_start
         elif T_max < T_start:
             raise ValueError(
@@ -244,7 +260,7 @@ class PerturbativeReheating(Background):
         """Invert s = h_s(T) 4 pi^2 T^3 / 90 by fixed-point iteration.
 
         h_s varies slowly with T and is flat above the table, so a handful of passes
-        is plenty. Seeded with the plateau value.
+        converges. Seeded with the plateau value.
         """
         T = (90.0 * s / (4.0 * np.pi**2 * G_PLATEAU)) ** (1.0 / 3.0)
         for _ in range(12):
@@ -344,8 +360,8 @@ class PerturbativeReheating(Background):
     def T_max(self):
         """Highest temperature the bath ever reached. [GeV]
 
-        Set by the initial inflaton density, so it is an input of the scenario in its
-        own right rather than something T_rh determines. A run cannot start above it.
+        Set by the initial inflaton density, not by T_rh, so it is an input of the
+        scenario in its own right. A run cannot start above it.
         """
 
         return self._T_max
