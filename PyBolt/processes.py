@@ -401,9 +401,7 @@ class PionScatteringToAxion(Process):  # a + pi <-> pi + pi
     and the solver's convention dF/dx = ... + q^2 CI/(2 g_x eps_q H_t x):
         CI = 2 q e^{-q} Gamma^> (1 - F/F_eq).
 
-    Below the table's lowest temperature (x above its largest x) the rates are zero.
-    Runs under a reheating background have to continue there until entropy injection
-    ends, and by then the averaged rate has fallen by more than 1e-4 from T_c.
+    Below the table's lowest temperature the rates are set to zero.
     """
 
     def __init__(self, table, f_a: float):

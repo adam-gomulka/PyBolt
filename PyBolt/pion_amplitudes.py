@@ -22,7 +22,7 @@ def isospin_sum_msq(T0, T1, T2):
     """(|T0|^2 + 3|T1|^2 + 5|T2|^2) / 6.
 
     Equal to 2211.03799 eq. (E.7) with T^I = 32 pi sum (2l+1) P_l t^I_l; the printed
-    32 pi^2 / 3 has to be read as (32 pi)^2 / 3 (see test_pion_amplitudes).
+    32 pi^2 / 3 has to be read as (32 pi)^2 / 3.
     """
     return (np.abs(T0) ** 2 + 3.0 * np.abs(T1) ** 2 + 5.0 * np.abs(T2) ** 2) / 6.0
 
@@ -42,7 +42,7 @@ def isospin_amplitudes(A, s, t, u):
 
 
 def msq_hat_lo(s, t):
-    """Reduced LO |M|^2, 2211.03799 App. B (above eq. relerror)."""
+    """Reduced LO |M|^2, 2211.03799 App. B."""
     u = 3.0 * M_PI**2 - s - t
     return (s**2 + t**2 + u**2 - 3.0 * M_PI**4) / F_PI**4
 

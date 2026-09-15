@@ -1,11 +1,9 @@
 """pi-pi phase shifts in the elastic region, sqrt(s) <= 2 M_K.
 
-Parametrizations and CFD parameters are transcribed from Garcia-Martin, Kaminski,
-Pelaez, Ruiz de Elvira, Yndurain, arXiv:1102.2183, Appendix A. 2211.03799 (App. E)
-uses exactly these three waves (S0, P, S2) below the KKbar threshold.
+CFD parametrizations of the S0, P and S2 waves from Garcia-Martin et al.,
+arXiv:1102.2183, App. A, as used in 2211.03799 App. E.
 
-The masses here are the ones that fit was made with. They are fit inputs and are
-kept apart from the kinematic pion mass in pion_amplitudes.
+The masses below are the fit's inputs, distinct from M_PI in pion_amplitudes.
 """
 
 import numpy as np

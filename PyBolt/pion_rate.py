@@ -131,8 +131,7 @@ class PionRateTable:
     def q_nodes(self):
         return 10.0**self.log10_q
 
-    # log10(10**a) lands a few ulps off a; snap such points onto the edge rather than
-    # reject them. Anything further out is a genuine request outside the table.
+    # Points within round-off of the table edge are snapped onto it.
     _EDGE_TOLERANCE = 1e-9
 
     def _snap(self, values, axis):

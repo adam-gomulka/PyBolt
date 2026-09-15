@@ -1,16 +1,9 @@
 #!/usr/bin/env python3
 """Hot axions from a pi <-> pi pi below T_c = 150 MeV (arXiv:2211.03799).
 
-Runs end at 15 MeV, not the paper's 30 MeV. For f_a <~ 1e6 GeV the axions are still
-coupled at 30 MeV and stopping there treats them as decoupled before muon
-annihilation; by 15 MeV Gamma/H < 1e-6 even at f_a = 1e5 GeV. For f_a >~ 1e7 GeV the
-two agree to 1e-4.
-
-Zero axion abundance at T_c ("Pions only"). One rate table serves the whole f_a scan.
-
-Under a reheating background (--bg sudden|reheating) the run starts at
-min(T_c, T_max) and ends only once entropy injection is over, so that the
-g_{*S} dilution in delta_neff is the whole story from there on.
+Starts with no axions at T_c and ends at 15 MeV, where Gamma/H < 1e-6 for
+f_a >= 1e5 GeV. Under a reheating background the run starts at min(T_c, T_max)
+and ends only once entropy injection is over.
 """
 
 import argparse
@@ -29,8 +22,7 @@ from PyBolt.processes import PionScatteringToAxion
 
 T_START = 0.150  # GeV, T_c
 T_END = 0.015  # GeV, just above the rate table's lowest temperature (13.8 MeV)
-# Energy-weighted Gamma/H above which the axions are not decoupled where the pion rate
-# stops. The rate falls by ~10 per e-fold there, so 0.1 bounds the missed change at ~1%.
+# Warn if the energy-weighted Gamma/H exceeds this where production stops.
 COUPLED_WARNING = 0.1
 N_X = 500
 M_DM = 1.0e-10  # GeV, massless for production purposes
@@ -43,10 +35,7 @@ SOLVER_OPTIONS = {"method": "LSODA", "rtol": 1e-6, "atol": 1e-24, "lband": 2, "u
 
 
 def build_background(bg="standard", T_rh=None, T_max=None):
-    """The expansion history, temperatures in GeV.
-
-    PerturbativeReheating is integrated from T_START (or T_max, if lower) upwards.
-    """
+    """The expansion history, temperatures in GeV."""
     if bg == "standard":
         return StandardCosmology()
     if bg not in BACKGROUNDS:
@@ -62,9 +51,8 @@ def build_background(bg="standard", T_rh=None, T_max=None):
 def run_window(background):
     """(T_start, T_end) in GeV for a run against ``background``.
 
-    Starts at T_c, or at T_max when the bath never got that hot. Ends at T_END or,
-    under reheating, where entropy injection has stopped (T_rh for the sudden model,
-    the handover to StandardCosmology for the integrated one, about T_rh/3).
+    Starts at min(T_c, T_max). Ends at T_END or, under reheating, once entropy
+    injection has stopped, whichever is lower.
     """
     if isinstance(background, StandardCosmology):
         return T_START, T_END
@@ -89,13 +77,10 @@ def run_window(background):
 
 
 def coupling_where_rate_stops(f_a, table, background, T_end, q):
-    """Energy-weighted Gamma/H where production ends: at T_end, or at the table's lowest
-    temperature if the run goes below it (the rate is zero there).
+    """Energy-weighted Gamma/H where production ends (T_end or the table's lowest T).
 
-    Gamma_E = int q^3 f_BE Gamma dq / int q^3 f_BE dq with Gamma = Gamma^> (1 - e^{-q})
-    the relaxation rate towards equilibrium (2211.03799 App. A), so f_BE Gamma = Gamma^<.
-    It is how fast the energy density, and so Delta N_eff, still changes. The high-q
-    tail stays coupled longer but carries no energy, so a plain max over q misleads.
+    Gamma_E = int q^3 f_BE Gamma dq / int q^3 f_BE dq, with Gamma = Gamma^> (1 - e^{-q})
+    the relaxation rate (2211.03799 App. A). Returns (Gamma_E/H, T_stop).
     """
     T_table_min = M_PI / 10.0 ** table.log10_x[-1]
     T_stop = max(T_end, T_table_min)
