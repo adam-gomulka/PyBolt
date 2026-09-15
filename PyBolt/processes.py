@@ -7,9 +7,8 @@ from .cosmology import Y_x_eq, Y_x_eq_massive, h_s, nmeq, npheq
 from .constants import e_g
 from tqdm import tqdm
 
-# Default number of x nodes used by Process.tabulate. Building the table is the whole
-# cost of the scheme -- one node costs one full adaptive evaluation -- so this is the
-# knob that matters, not the interpolation.
+# Default number of x nodes used by Process.tabulate. One node costs one full
+# adaptive evaluation, so this sets the cost of the scheme.
 #
 # Measured against adaptive quadrature over x in [1e-3, 30] (4.5 decades, the widest
 # range the production scans use), worst relative error above 1e-7 of the peak:
@@ -17,9 +16,8 @@ from tqdm import tqdm
 #     nodes     25       50      100      200      400
 #     error   5.9e-4   1.2e-5   7.8e-7   8.9e-8   3.7e-8
 #
-# 200 is where it meets the 5.6e-8 level at which the adaptive reference agrees with
-# itself, so 400 costs twice as much to buy nothing. Narrower x ranges get more nodes
-# per decade and so are comfortably inside this.
+# The adaptive reference only agrees with itself to 5.6e-8, which 200 nodes already
+# reaches. Narrower x ranges get more nodes per decade.
 N_TABULATION_POINTS = 200
 
 # Fractional headroom, in log x, added at each end of the tabulation range. LSODA
@@ -80,13 +78,12 @@ class Process(ABC):
     #
     # The ek integral inside the collision terms runs over the *bath* particle's
     # energy, and the bath is held at equilibrium, so the integrand contains only
-    # exp(-ek) and 1/(exp(ek) -+ 1). It therefore depends on x and q alone -- never
-    # on f, and never on the coupling, which sits outside it in the prefactor. The
-    # distribution enters afterwards, through the (1 - f/feq) factor.
+    # exp(-ek) and 1/(exp(ek) -+ 1). It depends on x and q alone -- never on f, and
+    # never on the coupling, which sits outside it in the prefactor. The distribution
+    # enters afterwards, through the (1 - f/feq) factor.
     #
-    # Splitting the integral out under the name "kernel" is what lets it be cached
-    # across the ~10^4 right-hand-side evaluations of one solve, and across every
-    # f_a of a scan.
+    # Because of that, the kernel can be cached across the right-hand-side
+    # evaluations of one solve and across every f_a of a scan.
 
     def _lower_limit(self, x: float, q: np.array) -> np.array:
         """Lower limit of the ek integral, per q. [1]"""
@@ -97,11 +94,10 @@ class Process(ABC):
         """The ek integrand at ``ek = a + t``, with the ``exp(-a)`` divided back out.
 
         The lower limit contributes a factor ``exp(-a)`` that reaches ``exp(-9e4)``
-        at the small-q, large-x corner of the production grid. Evaluating that
-        directly underflows the integrand to zero -- correct, but it leaves nothing
-        to interpolate. Shifting the variable and dividing the factor out leaves an
-        O(1) integral that can be splined, with the exponential restored
-        analytically afterwards.
+        at the small-q, large-x corner of the production grid, which underflows the
+        integrand to zero and leaves nothing to interpolate. Shifting the variable
+        and dividing the factor out leaves an O(1) integral that can be splined;
+        ``_kernel`` restores the exponential analytically.
         """
 
         raise NotImplementedError
@@ -149,12 +145,10 @@ class Process(ABC):
         """Precompute the kernel on a log-spaced x grid and spline it.
 
         ``log`` of the reduced integral is close to linear in ``log x``, so a cubic
-        spline over a few hundred nodes reproduces the adaptive result to well
-        inside the ODE solver's own tolerance. What is splined is the *reduced*
-        integral: the steep ``exp(-a)`` from the lower limit is put back
-        analytically in ``_kernel``, so the table never has to represent the fifty
-        orders of magnitude the kernel itself spans, and the underflow to exactly
-        zero at large ``x``/small ``q`` comes out right for free.
+        spline over a few hundred nodes reproduces the adaptive result well inside
+        the ODE solver's own tolerance. What is splined is the *reduced* integral;
+        ``_kernel`` puts the steep ``exp(-a)`` back analytically, so the table never
+        has to represent the fifty orders of magnitude the kernel itself spans.
 
         Parameters
         ----------
@@ -184,10 +178,10 @@ class Process(ABC):
     def adopt_table(self, other: "Process") -> "Process":
         """Reuse another process's kernel table.
 
-        Nothing under the integral knows about the coupling or the particle mass --
-        they enter through ``_kernel_prefactor`` -- so one table serves an entire
-        scan over ``f_a``. The two processes do have to agree about the integrand
-        itself, which means the same class and the same ``simplify`` flag.
+        The coupling and the particle mass enter through ``_kernel_prefactor``, not
+        under the integral, so one table serves an entire scan over ``f_a``. The two
+        processes must agree about the integrand itself: the same class and the same
+        ``simplify`` flag.
 
         Returns ``self``, so the call can be chained onto the constructor.
         """
@@ -402,7 +396,7 @@ class PrimakoffScatteringMB(Process): # l_i + X -> l_j + gamma_k
     def _kernel_prefactor(self, x, q):
         prefactor = 2 * self._g_1**2 * (e_g * self._coupling)**2 * self._m1**3
 
-        # The trailing /2 is the factor collisionTerm used to apply to C.
+        # The collision term is half the kernel for this process; hence the /2.
         return prefactor * np.exp(-q) / (q * x * 32 * (2*np.pi)**3) / 2
 
     def collisionTerm(self, x, q, f, feq):
@@ -412,144 +406,3 @@ class PrimakoffScatteringMB(Process): # l_i + X -> l_j + gamma_k
             return C_half
         else:
             return (1 - f/feq) * C_half
-
-
-
-class Annihilation:  # 2 -> 2 annihilation
-    """
-    A class for computing Scalar Singlet Dark Matter (SSDM) annihilation.
-
-    Author: Adam Gomułka
-    """
-
-    def __init__(
-        self,
-        m1: float,
-        g_1: float,
-        lambda_S: float,
-        x_min: float = 10,
-        x_max: float = 200,
-        num_points: int = 100,
-    ):
-        """
-        Parameters
-        ----------
-        m1 : float
-            The mass of the annihilating particles.
-        g_1 : float
-            The number of degrees of freedom of the annihilated particles.
-        lambda_S : float
-            The coupling constant.
-        x_min : float
-            The minimum value of x = m/T.
-        x_max : float
-            The maximum value of x = m/T.
-        num_points : int
-            The number of points in the x grid.
-        """
-        self._m1 = m1
-        self._g_1 = g_1
-        self._lambda_S = lambda_S
-        self._x_table = np.logspace(np.log10(x_min), np.log10(x_max), num_points)
-        self._sigma_v_table = self._tabulate_sigma_v()
-        self._sigma_v_interp = interp1d(
-            self._x_table, self._sigma_v_table, kind="cubic", fill_value="extrapolate"
-        )
-
-    def D_h_squared(self, s: float) -> float:
-        """Helper function to compute the cross sections."""
-        # Gamma_inv = self._lambda_S**2*pp.v_0**2 / (32 * np.pi * pp.higgs_mass**2)*np.sqrt(1-4*self._m1**2/pp.higgs_mass**2)
-        return 1 / (
-            (s - pp.higgs_mass**2) ** 2 + pp.higgs_mass**2 * (pp.Gamma_h_tot) ** 2
-        )
-
-    def sigma_v_cms(self, s: float) -> float:
-        """Compute the cross-section times velocity in the center of mass frame."""
-        return (
-            2
-            * self._lambda_S**2
-            * pp.v_0**2
-            / np.sqrt(s)
-            * self.D_h_squared(s)
-            * pp.Gamma_h(np.sqrt(s))
-        )
-
-    def _tabulate_sigma_v(self) -> np.ndarray:
-        """Tabulate the cross-section times velocity."""
-        sigma_v_values = []
-        for x in tqdm(self._x_table):
-            prefactor = x / (8 * self._m1**5 * kn(2, x) ** 2)
-            s_min = (2 * self._m1) ** 2
-            s_max = 1.215 * s_min  # should be adjusted
-
-            def integrand(s: float) -> float:
-                # return s * np.sqrt(s - 4 * self._m1**2) * kn(1, x * np.sqrt(s) / self._m1) * self.sigma_v_cms(s)*s/(2*s-4*self._m1**2)
-                return (
-                    np.sqrt(s)
-                    * (s - 4 * self._m1**2)
-                    * kn(1, x * np.sqrt(s) / self._m1)
-                    * self.sigma_v_cms(s)
-                    * s
-                    / (2 * s - 4 * self._m1**2)
-                )
-
-            def transformed_integrand(log_s: float) -> float:
-                s = np.exp(log_s)
-                return (
-                    integrand(s) * s
-                )  # Jacobian of the transformation ds = s d(log_s)
-
-            # Integration limits in the transformed variable
-            log_s_min = np.log(s_min)
-            log_s_max = np.log(s_max)
-
-            # Perform the integration in the transformed variable
-            integral, _ = quad(transformed_integrand, log_s_min, log_s_max)
-
-            sigma_v_values.append(prefactor * integral)
-
-            # integral, _ = quad(integrand, s_min, np.inf)
-            # sigma_v_values.append(prefactor * integral)
-
-            # # Plot the transformed integrand for debugging
-            # log_s_values = np.linspace(log_s_min2, log_s_max, 100)
-            # s_values = np.exp(log_s_values)
-            # plt.plot(s_values, [integrand(s) for s in s_values])
-            # plt.xscale('log')
-            # plt.yscale('log')
-            # plt.xlabel('s')
-            # plt.ylabel('Integrand')
-            # plt.title(f'Transformed Integrand for x={x}')
-            # plt.show()
-
-        return np.array(sigma_v_values)
-
-    def sigma_v(self, x: float) -> float:
-        """Compute the thermal averaged cross-section times velocity via cubic interpolation from _sigma_v_table."""
-        return self._sigma_v_interp(x)
-
-    def rate(self, x: float, Y: float) -> float:
-        """
-        Compute the rate of the annihilation process -- the R.H.S. of the Boltzmann equation.
-
-        Parameters
-        ----------
-        x : float
-            The mass of scalar particle to the temperature ratio: m/T.
-        Y : float
-            The dark matter abundance.
-        """
-
-        rate = (
-            self.sigma_v(x)
-            * (Y_x_eq_massive(self._m1 / x, self._m1) ** 2 - Y**2)
-            * s_ent(self._m1 / x) ** 2
-        )
-
-        return rate
-
-    def collisionTerm(self, x, q, f, feq):
-        # Not implemented yet
-
-        return zeros(q.shape)
-    
