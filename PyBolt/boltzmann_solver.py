@@ -144,21 +144,48 @@ class Model:
 
             eq = np.sqrt((self._mDM * x / self._m) ** 2 + q**2)
 
+            coeff = float(self._bg.redshift_coeff(self._m / x))
+
             dfdq = np.zeros_like(fq)
 
-            # Four-point method numerical derivative
-            dfdq[2:-2] = (-fq[4:] + 8 * fq[3:-1] - 8 * fq[1:-3] + fq[:-4]) / (12 * dq)
             """
-            Below we assume that the distribution function at the edges of the q grid always behaves as an equilibrium one
-            and use an analytical expression for the derivative (to avoid instabilities)
-            """
+            The q derivative is taken leaning into the direction the distribution is
+            coming from. Momenta slide along the grid at dq/dlnx = -coeff*q, so for
+            coeff > 0 the distribution moves towards small q and the values at a point
+            are set by what used to sit at larger q.
 
-            dfdq[:2] = (2 / q[:2] - q[:2] / eq[:2]) * fq[:2]
-            dfdq[-2:] = (2 / q[-2:] - q[-2:] / eq[-2:]) * fq[-2:]
+            A centred stencil leans neither way. It leaves the even and odd grid points
+            only weakly coupled, so a sawtooth alternating between them is nearly
+            invisible to it and nothing damps it. That is harmless while coeff is
+            gtilda, at most about 0.3, but under reheating coeff is 5/3 and the
+            sawtooth grows until f goes negative -- and refining the q grid makes it
+            worse rather than better.
+
+            Third-order upwind-biased, stencil {i-1, i, i+1, i+2}. It reaches one point
+            below and two above, so it still fits inside the lband=2, uband=2 the
+            solver is told to expect.
+            """
+            if coeff >= 0.0:
+                dfdq[1:-2] = (
+                    -2.0 * fq[:-3] - 3.0 * fq[1:-2] + 6.0 * fq[2:-1] - fq[3:]
+                ) / (6.0 * dq)
+                # Small q is where the distribution flows out, so no physical
+                # condition is needed: a one-sided derivative off the upwind side does.
+                dfdq[0] = (-3.0 * fq[0] + 4.0 * fq[1] - fq[2]) / (2.0 * dq)
+                # Large q is where it flows in. f is exponentially small there and the
+                # equilibrium form is the best statement available about it.
+                dfdq[-2:] = (2 / q[-2:] - q[-2:] / eq[-2:]) * fq[-2:]
+            else:
+                # Mirror image, for the case the momenta ever slide the other way.
+                dfdq[2:-1] = (
+                    fq[:-3] - 6.0 * fq[1:-2] + 3.0 * fq[2:-1] + 2.0 * fq[3:]
+                ) / (6.0 * dq)
+                dfdq[-1] = (3.0 * fq[-1] - 4.0 * fq[-2] + fq[-3]) / (2.0 * dq)
+                dfdq[:2] = (2 / q[:2] - q[:2] / eq[:2]) * fq[:2]
 
             # as defined by Eq. 9 in 2410.18186
             dfq_x = (
-                self._bg.redshift_coeff(self._m / x) * (q * dfdq - 2 * fq)
+                coeff * (q * dfdq - 2 * fq)
                 + q**2
                 * (self._CI(x, q, fq, f_eq) / (2 * self._g * eq))
                 / self._bg.H_t(self._m / x)
