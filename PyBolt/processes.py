@@ -264,12 +264,10 @@ def lam_f(x: float, y: float, z: float) -> float:
 
 class LeptonAnnihilationToAxionMB(Process): # l_i + l_j -> X + gamma_k 
     """
-    A class for the simplified version of the process of annihilation of two leptons into an axion and photon. Axion (massless) is the particle of interest in this reaction. It is assumed that the leptons are described by a Maxwell-Boltzmann distribution. We also assume that the axion number of dof is 1. 
+    Annihilation of two leptons into an axion and a photon. Axion (massless) is the particle of interest in this reaction. The leptons are described by a Maxwell-Boltzmann distribution whatever ``simplify`` is, hence "MB". We also assume that the axion number of dof is 1.
     """
 
     def __init__(self, m1, g_1, coupling, simplify: bool = False):
-        super().__init__(m1 = m1, g_1 = g_1, coupling = coupling, simplify = simplify)
-        
         """
         Parameters
         ----------
@@ -280,8 +278,21 @@ class LeptonAnnihilationToAxionMB(Process): # l_i + l_j -> X + gamma_k
         coupling : float
             The coupling constant for this process (C_l/f_a)
         simplify : bool
-            Whether to use the simplified version of the collision term (True) or the full version (False). The simplified version assumes that the lepton distribution is Maxwell-Boltzmann, while the full version uses the Fermi-Dirac distribution.
+            Switches off two corrections to the fBE collision term at once.
+
+            False (default): the photon, whose energy ``ek`` the kernel integrates
+            over, keeps its Bose-Einstein enhancement 1/(1 - exp(-ek)), and the
+            inverse process is kept through the factor (1 - f/f_eq), so the axions
+            relax towards equilibrium.
+
+            True: the photon is treated as Maxwell-Boltzmann and f/f_eq is set to
+            zero, i.e. pure production with no back-reaction. Valid only while the
+            axions are far below equilibrium, f << f_eq.
+
+            Only ``collisionTerm`` is affected. ``rate``, used by the number-density
+            solver, always keeps (1 - Y/Y_eq).
         """
+        super().__init__(m1 = m1, g_1 = g_1, coupling = coupling, simplify = simplify)
 
     def sigma_ann(self, s: float) -> float:
         """ Annihilation cross section """
@@ -332,12 +343,10 @@ class LeptonAnnihilationToAxionMB(Process): # l_i + l_j -> X + gamma_k
 
 class PrimakoffScatteringMB(Process): # l_i + X -> l_j + gamma_k 
     """
-    A class for the simplified version of the Primakoff scattering of axion on a lepton. Axion (massless) is the particle of interest in this reaction. It is assumed that the leptons are described by a Maxwell-Boltzmann distribution. We also assume that the axion number of dof is 1. 
+    Primakoff scattering of axion on a lepton. Axion (massless) is the particle of interest in this reaction. The leptons are Maxwell-Boltzmann in the number-density rate; in the fBE collision term, see ``simplify``. We also assume that the axion number of dof is 1.
     """
 
     def __init__(self, m1, g_1, coupling, simplify: bool = False):
-        super().__init__(m1 = m1, g_1 = g_1, coupling = coupling, simplify = simplify)
-        
         """
         Parameters
         ----------
@@ -348,9 +357,22 @@ class PrimakoffScatteringMB(Process): # l_i + X -> l_j + gamma_k
         coupling : float
             The coupling constant for this process (C_l/f_a)
         simplify : bool
-            Whether to use the simplified version of the collision term (True) or the full version (False). The simplified version assumes that the lepton distribution is Maxwell-Boltzmann, while the full version uses the Fermi-Dirac distribution.
+            Switches off two corrections to the fBE collision term at once.
+
+            False (default): the lepton whose energy ``ek`` the kernel integrates
+            over is weighted by its Fermi-Dirac occupation 1/(exp(ek) + 1) instead
+            of exp(-ek), and the inverse process is kept through the factor
+            (1 - f/f_eq), so the axions relax towards equilibrium.
+
+            True: that lepton is treated as Maxwell-Boltzmann and f/f_eq is set to
+            zero, i.e. pure production with no back-reaction. Valid only while the
+            axions are far below equilibrium, f << f_eq.
+
+            Only ``collisionTerm`` is affected. ``rate``, used by the number-density
+            solver, always keeps (1 - Y/Y_eq).
         """
-        
+        super().__init__(m1 = m1, g_1 = g_1, coupling = coupling, simplify = simplify)
+
     def sigma_prim(self, s: float) -> float:
         """ Primakoff scattering cross section """
         

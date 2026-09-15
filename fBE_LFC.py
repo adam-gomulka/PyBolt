@@ -165,8 +165,11 @@ def parse_args(argv=None):
                              "boltzmann_solver assumes uniform spacing.")
     parser.add_argument("--simplify", action=argparse.BooleanOptionalAction,
                         default=False,
-                        help="Simplify the collision terms by setting f/f_eq=1 and "
-                             "neglecting quantum corrections? (default=False)")
+                        help="Drop back-reaction (f/f_eq -> 0, pure production) and "
+                             "treat the integrated-over bath particle as "
+                             "Maxwell-Boltzmann instead of Bose-Einstein (photon, "
+                             "annihilation) or Fermi-Dirac (lepton, Primakoff). "
+                             "fbe mode only; nbe ignores it. (default: False)")
     parser.add_argument("--mode", type=str, choices=MODES, default="fbe",
                         help="fbe: solve the phase-space equation and store the "
                              "final f(q). nbe: solve the number-density equation "
