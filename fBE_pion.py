@@ -118,12 +118,8 @@ def solve_distribution(f_a, table, x, q, background=None):
     """Final F = q^2 f at the end of the x grid."""
     model = _model(x, q, background)
     model.addCollisionTerm(PionScatteringToAxion(table, f_a).collisionTerm)
-    model.solve_fBE(np.zeros(len(q)), dict(SOLVER_OPTIONS))
-    F = model.getSolution()[-1, :]
-    # solve_fBE logs failures and leaves the solution at zeros instead of raising.
-    if not np.any(F):
-        raise RuntimeError("solve_fBE did not converge for f_a={:.5e}".format(f_a))
-    return F
+    model.solve_fBE(np.zeros(len(q)), dict(SOLVER_OPTIONS))  # raises on failure
+    return model.getSolution()[-1, :]
 
 
 def solve_number_density(f_a, table, x, background=None):
