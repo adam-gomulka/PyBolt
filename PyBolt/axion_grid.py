@@ -7,6 +7,7 @@ are each defined exactly once.
 
 import json
 import os
+import uuid
 
 import numpy as np
 
@@ -29,8 +30,8 @@ Q_HEADER_PREFIX = "# q,"
 def f_grid(f_min, f_max, f_num):
     """The full grid of axion decay constants for a run.
 
-    Every process recomputes this identically from the same three numbers, which
-    is what makes a grid index a globally meaningful name for one f value.
+    Every process recomputes it identically from the same three numbers, so a grid
+    index names one f value everywhere.
     """
     return np.logspace(np.log10(f_min), np.log10(f_max), f_num)
 
@@ -93,15 +94,35 @@ def atomic_write_text(path, text):
 
     The temp file is created in the destination directory so the final rename
     stays within one filesystem, where os.replace is atomic.
+
+    Its name carries a random token because array tasks share a parts directory
+    and write meta.json and q_grid.dat to the same destination at the same time.
+    A fixed temp name makes them stage over one another: the first rename moves
+    the shared file away and every other writer's os.replace fails with ENOENT.
+    Giving each writer its own staging file makes the losers harmless, which is
+    what the "they race harmlessly" claim on write_meta_if_absent needs to be
+    true. The rename itself then decides the winner, and the content is
+    identical either way.
     """
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
-    temporary = os.path.join(directory, "." + os.path.basename(path) + ".tmp")
-    with open(temporary, "w") as handle:
-        handle.write(text)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temporary, path)
+    temporary = os.path.join(
+        directory,
+        ".{}.{}.tmp".format(os.path.basename(path), uuid.uuid4().hex),
+    )
+    try:
+        with open(temporary, "w") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        # Do not leave staging files behind when the write is interrupted.
+        try:
+            os.remove(temporary)
+        except OSError:
+            pass
+        raise
 
 
 def format_grid(values):
@@ -124,10 +145,9 @@ def read_q_grid_from_file(path):
     nbe files have no q axis, and files written before the grid was recorded have
     no q line either.
 
-    Downstream readers that only want the numbers do not need this: every header
-    line starts with '#', so ``np.loadtxt(path, delimiter=',', comments='#')`` and
-    ``pd.read_csv(path, comment='#', header=None)`` both skip them regardless of
-    how many there are.
+    Readers that only want the numbers do not need this: every header line starts
+    with '#', which ``np.loadtxt(..., comments='#')`` and
+    ``pd.read_csv(..., comment='#')`` both skip.
     """
     with open(path) as handle:
         for line in handle:
@@ -147,9 +167,8 @@ def q_grid_path(parts_dir):
 def write_q_grid_if_absent(parts_dir, q_values):
     """Record the q grid the solver used. Returns True if it wrote.
 
-    Written rather than re-derived from the metadata bounds so the values that
-    ship next to the data are exactly the ones the solver saw, with no chance of
-    the two drifting apart.
+    Written out rather than re-derived from the metadata bounds, so the values
+    shipped next to the data are exactly the ones the solver saw.
     """
     path = q_grid_path(parts_dir)
     if os.path.exists(path):
@@ -178,8 +197,10 @@ def meta_path(parts_dir):
 def write_meta_if_absent(parts_dir, meta):
     """Write the run metadata unless it is already there. Returns True if written.
 
-    Array tasks all try this; they race harmlessly, because they write identical
-    content and the write itself is atomic.
+    Array tasks all try this at once, and the exists check does not stop two of
+    them getting through. That is harmless because they build identical content
+    from the same -v environment and atomic_write_text stages each writer's copy
+    under its own temp name, so the losers simply rewrite the same bytes.
     """
     path = meta_path(parts_dir)
     if os.path.exists(path):
@@ -207,9 +228,6 @@ def read_meta(parts_dir):
 
 def read_run(run_dir):
     """Load one run directory: (meta, f_a, f, q).
-
-    A convenience for notebook work. The path is still constructed by hand --
-    this only saves re-deriving the q grid and re-opening the sidecar.
 
     ``q`` is None for nbe runs, which have no momentum axis; ``f`` is then the
     single Y column.
