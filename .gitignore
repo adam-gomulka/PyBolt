@@ -5,3 +5,15 @@ scratch/
 *.pkl
 .pytest_cache/
 notebook_cache/
+
+# Personal analysis and cluster tooling: kept locally, not part of the library.
+/tests/
+/docs/
+/distributions/
+/*.sh
+/*.png
+/*.pdf
+/merge_distributions.py
+/tabulate_pion_rate.py
+/validate_pion_rate.py
+/requirements-dev.txt
