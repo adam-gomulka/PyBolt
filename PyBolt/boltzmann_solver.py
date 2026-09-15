@@ -173,13 +173,14 @@ class Model:
         # Solving a system of ODEs for each momentum mode
         fBE_sol = solve_ivp(fBE_RHS, [x[0], x[-1]], f0, t_eval=x, **solver_options)
 
+        # Raised rather than logged: returning would leave self._f at the zeros
+        # changeGrid allocated, and callers would store them as a result.
         if not fBE_sol.success:
-            logging.error(f"Integration failed: {fBE_sol.message}")
-        else:
-            end_time = time.time()
-            total_time = end_time - start_time
-            logging.info(f"solve_fBE completed in {total_time:.2f} seconds")
-            self._f = np.transpose(fBE_sol.y)
+            raise RuntimeError(f"solve_fBE integration failed: {fBE_sol.message}")
+
+        total_time = time.time() - start_time
+        logging.info(f"solve_fBE completed in {total_time:.2f} seconds")
+        self._f = np.transpose(fBE_sol.y)
 
     # ***************************************************************************************************
     
